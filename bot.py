@@ -1,6 +1,6 @@
 """
 Netflix OTP Bot - Professional UI with Admin/User separation
-Updated with account re-login support and 2FA flow fix
+Updated with proper OTP response handling
 """
 
 import os
@@ -699,7 +699,7 @@ Start again with /start
             del login_states[user_id]
 
 # ========================
-# OTP HANDLER (For both users and admin)
+# OTP HANDLER (For both users and admin) - FIXED
 # ========================
 @bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_otp")
 def handle_otp_input(message):
@@ -781,6 +781,7 @@ Enter the code again:
         if "two_step_password" in state:
             two_step_password = state["two_step_password"]
         
+        # Call verify_otp with optional 2FA password
         result = account_manager.verify_otp(
             state["session_key"],
             otp_code,
@@ -881,7 +882,7 @@ Start again with /start
 
 <b>📱 Phone:</b> <code>{state['phone']}</code>
 <b>🔐 2FA:</b> {'✅ Enabled' if result['has_2fa'] else '❌ Disabled'}
-<b>Status:</b> {'✅ Updated existing account' if result.get('updated_existing') else '✅ Added new account'}
+<b>Status:</b> {'✅ Updated existing account' if saved else '✅ Added new account'}
 
 Account has been added/updated in database and is now available for OTP fetching.
 """
