@@ -1,5 +1,6 @@
 """
 Netflix OTP Bot - Professional UI with Admin/User separation
+Removed Logout function, improved message handling
 """
 
 import os
@@ -29,7 +30,6 @@ MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://Alisha:Alisha123@cluster0.yqcp
 # Netflix Theme Images
 NETFLIX_MAIN_IMAGE = "https://files.catbox.moe/hihx1r.jpg"  # Netflix themed image
 NETFLIX_WELCOME_IMAGE = "https://files.catbox.moe/hihx1r.jpg"  # Your image URL
-
 # ========================
 # SETUP
 # ========================
@@ -60,9 +60,6 @@ account_manager = AccountManager(API_ID, API_HASH)
 
 # Store temporary login states
 login_states = {}  # {user_id: {step: "phone", phone: "", phone_code_hash: "", session_key: ""}}
-
-# Store message IDs for editing
-user_messages = {}  # {user_id: {"welcome_msg_id": 123, "login_msg_id": 456}}
 
 # ========================
 # UTILITY FUNCTIONS
@@ -158,68 +155,36 @@ def save_otp_log(phone, otp, fetched_by=None):
         logger.error(f"Save OTP log error: {e}")
         return False
 
-def edit_or_resend(chat_id, message_id, text, markup=None, parse_mode="HTML", photo_url=None):
-    """Edit message if possible, otherwise send new"""
+def delete_and_send(chat_id, old_message_id, text, markup=None, parse_mode="HTML", photo_url=None):
+    """Delete old message and send new one"""
     try:
-        if message_id:
+        # Delete old message if exists
+        if old_message_id:
             try:
-                if photo_url:
-                    # Can't edit photo message, send new
-                    try:
-                        bot.delete_message(chat_id, message_id)
-                    except:
-                        pass
-                    msg = bot.send_photo(
-                        chat_id,
-                        photo_url,
-                        caption=text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                    return msg.message_id
-                else:
-                    # Edit text message
-                    bot.edit_message_text(
-                        text,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                    return message_id
-            except Exception as e:
-                # If edit fails, send new message
-                try:
-                    bot.delete_message(chat_id, message_id)
-                except:
-                    pass
-                
-                if photo_url:
-                    msg = bot.send_photo(
-                        chat_id,
-                        photo_url,
-                        caption=text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                else:
-                    msg = bot.send_message(
-                        chat_id,
-                        text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                return msg.message_id
+                bot.delete_message(chat_id, old_message_id)
+            except:
+                pass
         
-        # No message_id, send new
+        # Send new message
         if photo_url:
-            msg = bot.send_photo(
-                chat_id,
-                photo_url,
-                caption=text,
-                parse_mode=parse_mode,
-                reply_markup=markup
-            )
+            try:
+                msg = bot.send_photo(
+                    chat_id,
+                    photo_url,
+                    caption=text,
+                    parse_mode=parse_mode,
+                    reply_markup=markup
+                )
+                return msg.message_id
+            except:
+                # If photo fails, send text
+                msg = bot.send_message(
+                    chat_id,
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=markup
+                )
+                return msg.message_id
         else:
             msg = bot.send_message(
                 chat_id,
@@ -227,10 +192,78 @@ def edit_or_resend(chat_id, message_id, text, markup=None, parse_mode="HTML", ph
                 parse_mode=parse_mode,
                 reply_markup=markup
             )
-        return msg.message_id
-        
+            return msg.message_id
+            
     except Exception as e:
-        logger.error(f"Edit/resend error: {e}")
+        logger.error(f"Delete and send error: {e}")
+        return None
+
+def smart_edit_or_send(chat_id, user_id, message_key, text, markup=None, parse_mode="HTML", photo_url=None):
+    """Smart message handling - try to edit, if fails delete and send new"""
+    # Store message history
+    if 'message_history' not in globals():
+        global message_history
+        message_history = {}
+    
+    if user_id not in message_history:
+        message_history[user_id] = {}
+    
+    old_message_id = message_history[user_id].get(message_key)
+    
+    try:
+        # Try to edit if we have old message ID
+        if old_message_id:
+            if photo_url:
+                # For photos, we need to delete and send new
+                return delete_and_send(chat_id, old_message_id, text, markup, parse_mode, photo_url)
+            else:
+                # For text, try to edit
+                try:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=chat_id,
+                        message_id=old_message_id,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    return old_message_id
+                except:
+                    # If edit fails, delete and send new
+                    return delete_and_send(chat_id, old_message_id, text, markup, parse_mode, photo_url)
+        else:
+            # No old message, send new
+            if photo_url:
+                try:
+                    msg = bot.send_photo(
+                        chat_id,
+                        photo_url,
+                        caption=text,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    message_history[user_id][message_key] = msg.message_id
+                    return msg.message_id
+                except:
+                    msg = bot.send_message(
+                        chat_id,
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    message_history[user_id][message_key] = msg.message_id
+                    return msg.message_id
+            else:
+                msg = bot.send_message(
+                    chat_id,
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=markup
+                )
+                message_history[user_id][message_key] = msg.message_id
+                return msg.message_id
+                
+    except Exception as e:
+        logger.error(f"Smart edit error: {e}")
         return None
 
 # ========================
@@ -250,23 +283,17 @@ def handle_start(message):
     if user_id in login_states:
         del login_states[user_id]
     
-    # Delete previous messages if any
-    if user_id in user_messages:
-        for msg_id in user_messages[user_id].values():
-            try:
-                bot.delete_message(user_id, msg_id)
-            except:
-                pass
-        user_messages[user_id] = {}
-    
     # Show appropriate menu based on user type
     if is_admin(user_id):
-        show_admin_dashboard(user_id)
+        show_admin_dashboard(user_id, message.chat.id)
     else:
-        show_netflix_welcome(user_id)
+        show_netflix_welcome(user_id, message.chat.id)
 
-def show_netflix_welcome(user_id):
+def show_netflix_welcome(user_id, chat_id=None):
     """Show Netflix welcome screen for normal users"""
+    if not chat_id:
+        chat_id = user_id
+    
     welcome_text = """
 <b>🎬 Welcome To Netflix On Your Number Bot 🎬</b>
 
@@ -292,44 +319,23 @@ def show_netflix_welcome(user_id):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎬 Get Netflix Now", callback_data="get_netflix_now"))
     
-    # Try to send with image first
-    try:
-        msg = bot.send_photo(
-            user_id,
-            NETFLIX_WELCOME_IMAGE,
-            caption=welcome_text,
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-        message_id = msg.message_id
-    except:
-        # If image fails, send text only
-        msg = bot.send_message(
-            user_id,
-            welcome_text,
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-        message_id = msg.message_id
-    
-    # Store message ID
-    if user_id not in user_messages:
-        user_messages[user_id] = {}
-    user_messages[user_id]["welcome_msg_id"] = message_id
+    smart_edit_or_send(
+        chat_id,
+        user_id,
+        "welcome",
+        welcome_text,
+        markup=markup,
+        photo_url=NETFLIX_WELCOME_IMAGE
+    )
 
-def show_admin_dashboard(user_id):
+def show_admin_dashboard(user_id, chat_id=None):
     """Show admin dashboard"""
-    if not is_admin(user_id):
-        show_netflix_welcome(user_id)
-        return
+    if not chat_id:
+        chat_id = user_id
     
-    # Delete previous messages
-    if user_id in user_messages:
-        for msg_id in user_messages[user_id].values():
-            try:
-                bot.delete_message(user_id, msg_id)
-            except:
-                pass
+    if not is_admin(user_id):
+        show_netflix_welcome(user_id, chat_id)
+        return
     
     total_accounts = get_total_accounts()
     total_otp_logs = otp_logs_col.count_documents({})
@@ -354,28 +360,14 @@ def show_admin_dashboard(user_id):
         InlineKeyboardButton("🔄 Refresh", callback_data="refresh_admin")
     )
     
-    try:
-        msg = bot.send_photo(
-            user_id,
-            NETFLIX_MAIN_IMAGE,
-            caption=admin_text,
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-        message_id = msg.message_id
-    except:
-        msg = bot.send_message(
-            user_id,
-            admin_text,
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-        message_id = msg.message_id
-    
-    # Store message ID
-    if user_id not in user_messages:
-        user_messages[user_id] = {}
-    user_messages[user_id]["admin_msg_id"] = message_id
+    smart_edit_or_send(
+        chat_id,
+        user_id,
+        "admin_dashboard",
+        admin_text,
+        markup=markup,
+        photo_url=NETFLIX_MAIN_IMAGE
+    )
 
 # ========================
 # USER FLOW - NETFLIX LOGIN
@@ -388,7 +380,7 @@ def handle_get_netflix_now(call):
     # Set state to ask for phone number
     login_states[user_id] = {"step": "ask_phone", "user_type": "netflix"}
     
-    # Edit welcome message to show phone input
+    # Show phone input
     login_text = """
 <b>📱 Netflix Account Setup</b>
 
@@ -402,18 +394,14 @@ def handle_get_netflix_now(call):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix"))
     
-    message_id = edit_or_resend(
+    smart_edit_or_send(
         call.message.chat.id,
-        user_messages.get(user_id, {}).get("welcome_msg_id"),
+        user_id,
+        "login",
         login_text,
         markup=markup,
         photo_url=NETFLIX_WELCOME_IMAGE
     )
-    
-    if message_id:
-        if user_id not in user_messages:
-            user_messages[user_id] = {}
-        user_messages[user_id]["login_msg_id"] = message_id
 
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_netflix")
 def handle_cancel_netflix(call):
@@ -423,7 +411,7 @@ def handle_cancel_netflix(call):
     if user_id in login_states:
         del login_states[user_id]
     
-    show_netflix_welcome(user_id)
+    show_netflix_welcome(user_id, call.message.chat.id)
 
 # ========================
 # ADMIN LOGIN FLOW
@@ -453,18 +441,14 @@ Enter phone number with country code:
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin"))
     
-    message_id = edit_or_resend(
+    smart_edit_or_send(
         call.message.chat.id,
-        user_messages.get(user_id, {}).get("admin_msg_id"),
+        user_id,
+        "login",
         login_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
     )
-    
-    if message_id:
-        if user_id not in user_messages:
-            user_messages[user_id] = {}
-        user_messages[user_id]["login_msg_id"] = message_id
 
 # ========================
 # PHONE NUMBER HANDLER (For both users and admin)
@@ -473,13 +457,14 @@ Enter phone number with country code:
 def handle_phone_input(message):
     """Handle phone number input from both users and admin"""
     user_id = message.from_user.id
+    chat_id = message.chat.id
     
     state = login_states.get(user_id)
     if not state:
         if is_admin(user_id):
-            show_admin_dashboard(user_id)
+            show_admin_dashboard(user_id, chat_id)
         else:
-            show_netflix_welcome(user_id)
+            show_netflix_welcome(user_id, chat_id)
         return
     
     phone = message.text.strip()
@@ -491,14 +476,16 @@ def handle_phone_input(message):
                 InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin")
             )
             photo = NETFLIX_MAIN_IMAGE
+            error_title = "Invalid Format"
         else:
             markup = InlineKeyboardMarkup().add(
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
             )
             photo = NETFLIX_WELCOME_IMAGE
+            error_title = "Invalid Phone Number"
         
-        error_text = """
-<b>❌ Invalid Format</b>
+        error_text = f"""
+<b>❌ {error_title}</b>
 
 Please enter valid phone number with country code.
 
@@ -507,16 +494,14 @@ Please enter valid phone number with country code.
 Enter phone number again:
 """
         
-        message_id = edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=photo
         )
-        
-        if message_id:
-            user_messages[user_id]["login_msg_id"] = message_id
         return
     
     # Send OTP using Pyrogram
@@ -537,15 +522,13 @@ Enter phone number again:
 """
         photo = NETFLIX_WELCOME_IMAGE
     
-    message_id = edit_or_resend(
-        message.chat.id,
-        user_messages.get(user_id, {}).get("login_msg_id"),
+    smart_edit_or_send(
+        chat_id,
+        user_id,
+        "login",
         sending_text,
         photo_url=photo
     )
-    
-    if message_id:
-        user_messages[user_id]["login_msg_id"] = message_id
     
     try:
         result = account_manager.send_otp(phone)
@@ -574,16 +557,14 @@ Enter phone number again:
 Enter phone number again:
 """
             
-            message_id = edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "login",
                 error_text,
                 markup=markup,
                 photo_url=error_photo
             )
-            
-            if message_id:
-                user_messages[user_id]["login_msg_id"] = message_id
             return
         
         # Update state
@@ -622,16 +603,14 @@ Enter the 5-digit OTP code received on Telegram:
 Enter the 5-digit verification code:
 """
         
-        message_id = edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             otp_text,
             markup=markup,
             photo_url=otp_photo
         )
-        
-        if message_id:
-            user_messages[user_id]["login_msg_id"] = message_id
         
     except Exception as e:
         logger.error(f"Send OTP error: {e}")
@@ -646,9 +625,10 @@ Error: {str(e)}
 Start again with /start
 """
         
-        edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             photo_url=NETFLIX_WELCOME_IMAGE
         )
@@ -663,13 +643,14 @@ Start again with /start
 def handle_otp_input(message):
     """Handle OTP input from both users and admin"""
     user_id = message.from_user.id
+    chat_id = message.chat.id
     
     state = login_states.get(user_id)
     if not state:
         if is_admin(user_id):
-            show_admin_dashboard(user_id)
+            show_admin_dashboard(user_id, chat_id)
         else:
-            show_netflix_welcome(user_id)
+            show_netflix_welcome(user_id, chat_id)
         return
     
     otp_code = message.text.strip()
@@ -700,16 +681,14 @@ Netflix verification code must be 5 digits.
 Enter the code again:
 """
         
-        message_id = edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=error_photo
         )
-        
-        if message_id:
-            user_messages[user_id]["login_msg_id"] = message_id
         return
     
     # Show verifying message
@@ -728,15 +707,13 @@ Enter the code again:
 """
         verify_photo = NETFLIX_WELCOME_IMAGE
     
-    message_id = edit_or_resend(
-        message.chat.id,
-        user_messages.get(user_id, {}).get("login_msg_id"),
+    smart_edit_or_send(
+        chat_id,
+        user_id,
+        "login",
         verify_text,
         photo_url=verify_photo
     )
-    
-    if message_id:
-        user_messages[user_id]["login_msg_id"] = message_id
     
     try:
         result = account_manager.verify_otp(
@@ -775,16 +752,14 @@ Enter your 2-step verification password:
 Enter your Netflix account password:
 """
             
-            message_id = edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "login",
                 text,
                 markup=markup,
                 photo_url=photo
             )
-            
-            if message_id:
-                user_messages[user_id]["login_msg_id"] = message_id
             return
         
         if not result.get("success"):
@@ -811,9 +786,10 @@ Start again with /start
 """
                 error_photo = NETFLIX_WELCOME_IMAGE
             
-            edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "login",
                 error_text,
                 photo_url=error_photo
             )
@@ -850,7 +826,7 @@ Account has been added to database and is now available for OTP fetching.
             if user_id in login_states:
                 del login_states[user_id]
             
-            show_admin_dashboard(user_id)
+            show_admin_dashboard(user_id, chat_id)
             
         else:
             success_text = f"""
@@ -872,20 +848,18 @@ Thank you for choosing Netflix! 🎬
             if user_id in login_states:
                 del login_states[user_id]
             
-            # Show success message with new image
+            # Show success message
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
             
-            message_id = edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "success",
                 success_text,
                 markup=markup,
                 photo_url=success_photo
             )
-            
-            if message_id:
-                user_messages[user_id]["success_msg_id"] = message_id
         
     except Exception as e:
         logger.error(f"Verify OTP error: {e}")
@@ -900,9 +874,10 @@ Error: {str(e)}
 Start again with /start
 """
         
-        edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             photo_url=NETFLIX_WELCOME_IMAGE
         )
@@ -917,13 +892,14 @@ Start again with /start
 def handle_2fa_input(message):
     """Handle 2FA password input from both users and admin"""
     user_id = message.from_user.id
+    chat_id = message.chat.id
     
     state = login_states.get(user_id)
     if not state:
         if is_admin(user_id):
-            show_admin_dashboard(user_id)
+            show_admin_dashboard(user_id, chat_id)
         else:
-            show_netflix_welcome(user_id)
+            show_netflix_welcome(user_id, chat_id)
         return
     
     password = message.text.strip()
@@ -954,16 +930,14 @@ Netflix account password cannot be empty.
 Enter password again:
 """
         
-        message_id = edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=error_photo
         )
-        
-        if message_id:
-            user_messages[user_id]["login_msg_id"] = message_id
         return
     
     # Show verifying message
@@ -982,15 +956,13 @@ Enter password again:
 """
         verify_photo = NETFLIX_WELCOME_IMAGE
     
-    message_id = edit_or_resend(
-        message.chat.id,
-        user_messages.get(user_id, {}).get("login_msg_id"),
+    smart_edit_or_send(
+        chat_id,
+        user_id,
+        "login",
         verify_text,
         photo_url=verify_photo
     )
-    
-    if message_id:
-        user_messages[user_id]["login_msg_id"] = message_id
     
     try:
         result = account_manager.verify_2fa(state["session_key"], password)
@@ -1019,9 +991,10 @@ Start again with /start
 """
                 error_photo = NETFLIX_WELCOME_IMAGE
             
-            edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "login",
                 error_text,
                 photo_url=error_photo
             )
@@ -1058,7 +1031,7 @@ Account with 2FA has been added to database.
             if user_id in login_states:
                 del login_states[user_id]
             
-            show_admin_dashboard(user_id)
+            show_admin_dashboard(user_id, chat_id)
             
         else:
             success_text = f"""
@@ -1085,16 +1058,14 @@ Thank you for choosing Netflix! 🎬
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
             
-            message_id = edit_or_resend(
-                message.chat.id,
-                user_messages.get(user_id, {}).get("login_msg_id"),
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "success",
                 success_text,
                 markup=markup,
                 photo_url=success_photo
             )
-            
-            if message_id:
-                user_messages[user_id]["success_msg_id"] = message_id
         
     except Exception as e:
         logger.error(f"2FA verification error: {e}")
@@ -1109,9 +1080,10 @@ Error: {str(e)}
 Start again with /start
 """
         
-        edit_or_resend(
-            message.chat.id,
-            user_messages.get(user_id, {}).get("login_msg_id"),
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
             error_text,
             photo_url=NETFLIX_WELCOME_IMAGE
         )
@@ -1129,14 +1101,14 @@ def handle_back_to_admin(call):
     
     if not is_admin(user_id):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
-        show_netflix_welcome(user_id)
+        show_netflix_welcome(user_id, call.message.chat.id)
         return
     
     # Clear login state
     if user_id in login_states:
         del login_states[user_id]
     
-    show_admin_dashboard(user_id)
+    show_admin_dashboard(user_id, call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "refresh_admin")
 def handle_refresh_admin(call):
@@ -1147,7 +1119,7 @@ def handle_refresh_admin(call):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    show_admin_dashboard(user_id)
+    show_admin_dashboard(user_id, call.message.chat.id)
     bot.answer_callback_query(call.id, "✅ Dashboard refreshed")
 
 @bot.callback_query_handler(func=lambda call: call.data == "view_accounts")
@@ -1167,9 +1139,10 @@ def handle_view_accounts(call):
         markup.add(InlineKeyboardButton("🔐 Add Account", callback_data="admin_login"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
         
-        edit_or_resend(
+        smart_edit_or_send(
             call.message.chat.id,
-            user_messages.get(user_id, {}).get("admin_msg_id"),
+            user_id,
+            "admin_view",
             "<b>📱 No Accounts Found</b>\n\nAdd your first account to get started.",
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
@@ -1178,29 +1151,31 @@ def handle_view_accounts(call):
     
     # Create account list text
     account_text = "<b>📱 All Accounts</b>\n\n"
-    for idx, account in enumerate(accounts[:20], 1):
+    for idx, account in enumerate(accounts[:10], 1):
         phone_display = format_phone(account["phone"])
         account_text += f"{idx}. <code>{phone_display}</code>\n"
     
-    if len(accounts) > 20:
-        account_text += f"\n... and {len(accounts) - 20} more accounts"
+    if len(accounts) > 10:
+        account_text += f"\n... and {len(accounts) - 10} more accounts"
     
     # Create keyboard with account buttons
     markup = InlineKeyboardMarkup(row_width=2)
     
-    # Add first 10 accounts as buttons
-    for account in accounts[:10]:
+    # Add accounts as buttons
+    for account in accounts[:6]:
         phone_display = format_phone(account["phone"])
+        short_phone = phone_display[:10] + "..." if len(phone_display) > 10 else phone_display
         markup.add(InlineKeyboardButton(
-            f"📱 {phone_display[:10]}...",
+            f"📱 {short_phone}",
             callback_data=f"account_{account['_id']}"
         ))
     
     markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
     
-    edit_or_resend(
+    smart_edit_or_send(
         call.message.chat.id,
-        user_messages.get(user_id, {}).get("admin_msg_id"),
+        user_id,
+        "admin_view",
         account_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
@@ -1224,12 +1199,9 @@ def handle_account_selection(call):
             handle_view_accounts(call)
             return
         
-        # Show account actions
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🔢 Get Latest OTP", callback_data=f"get_otp_{account_id}"),
-            InlineKeyboardButton("🚪 Logout", callback_data=f"logout_{account_id}")
-        )
+        # Show account actions - ONLY Get OTP button
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔢 Get Latest OTP", callback_data=f"get_otp_{account_id}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="view_accounts"))
         
         phone_display = format_phone(account["phone"])
@@ -1242,12 +1214,13 @@ def handle_account_selection(call):
 <b>2FA:</b> {has_2fa}
 <b>Added:</b> {account.get('created_at', datetime.utcnow()).strftime('%d %b %Y')}
 
-Select an action:
+Click below to get OTP:
 """
         
-        edit_or_resend(
+        smart_edit_or_send(
             call.message.chat.id,
-            user_messages.get(user_id, {}).get("admin_msg_id"),
+            user_id,
+            "account_details",
             account_text,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
@@ -1284,15 +1257,14 @@ def handle_get_otp(call):
         )
         
         if not otp:
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("🔄 Try Again", callback_data=f"get_otp_{account_id}"),
-                InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}")
-            )
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"))
+            markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}"))
             
-            edit_or_resend(
+            smart_edit_or_send(
                 call.message.chat.id,
-                user_messages.get(user_id, {}).get("admin_msg_id"),
+                user_id,
+                "otp_result",
                 f"<b>📱 No OTP Found</b>\n\n"
                 f"Phone: <code>{format_phone(account['phone'])}</code>\n\n"
                 f"No OTP found in recent messages.",
@@ -1314,17 +1286,15 @@ def handle_get_otp(call):
         
         message += f"<b>Fetched:</b> {datetime.utcnow().strftime('%H:%M:%S')}\n"
         
-        # Create buttons
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"),
-            InlineKeyboardButton("🚪 Logout", callback_data=f"logout_{account_id}")
-        )
+        # Create buttons - ONLY Get OTP Again and Back
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}"))
         
-        edit_or_resend(
+        smart_edit_or_send(
             call.message.chat.id,
-            user_messages.get(user_id, {}).get("admin_msg_id"),
+            user_id,
+            "otp_result",
             message,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
@@ -1333,22 +1303,6 @@ def handle_get_otp(call):
     except Exception as e:
         logger.error(f"Get OTP error: {e}")
         bot.answer_callback_query(call.id, f"Error: {str(e)}", show_alert=True)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("logout_"))
-def handle_logout(call):
-    """Handle logout button (admin only)"""
-    user_id = call.from_user.id
-    
-    if not is_admin(user_id):
-        bot.answer_callback_query(call.id, "Admin only", show_alert=True)
-        return
-    
-    account_id = call.data.replace("logout_", "")
-    
-    # Go back to account details
-    call.data = f"account_{account_id}"
-    handle_account_selection(call)
-    bot.answer_callback_query(call.id, "Logout feature coming soon!", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data == "otp_logs")
 def handle_otp_logs(call):
@@ -1375,9 +1329,10 @@ def handle_otp_logs(call):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
     
-    edit_or_resend(
+    smart_edit_or_send(
         call.message.chat.id,
-        user_messages.get(user_id, {}).get("admin_msg_id"),
+        user_id,
+        "otp_logs",
         logs_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
@@ -1392,7 +1347,7 @@ def handle_back_to_welcome(call):
     if user_id in login_states:
         del login_states[user_id]
     
-    show_netflix_welcome(user_id)
+    show_netflix_welcome(user_id, call.message.chat.id)
 
 # ========================
 # MESSAGE HANDLER
@@ -1401,15 +1356,16 @@ def handle_back_to_welcome(call):
 def handle_other_messages(message):
     """Handle all other messages"""
     user_id = message.from_user.id
+    chat_id = message.chat.id
     
     # Ensure user exists
     ensure_user_exists(user_id, message.from_user.first_name, message.from_user.username)
     
     # Show appropriate menu
     if is_admin(user_id):
-        show_admin_dashboard(user_id)
+        show_admin_dashboard(user_id, chat_id)
     else:
-        show_netflix_welcome(user_id)
+        show_netflix_welcome(user_id, chat_id)
 
 # ========================
 # RUN BOT
