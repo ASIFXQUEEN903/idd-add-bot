@@ -25,7 +25,7 @@ API_ID = int(os.getenv('API_ID', '6435225'))
 API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')
 
 # MongoDB
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://rahul:rahulkr@cluster0.szdpcp6.mongodb.net/?retryWrites=true&w=majority')
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://Alisha:Alisha123@cluster0.yqcpftw.mongodb.net/?retryWrites=true&w=majority')
 
 # ========================
 # SETUP
