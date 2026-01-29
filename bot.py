@@ -16,15 +16,15 @@ from account import AccountManager
 # ========================
 # CONFIGURATION
 # ========================
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 'YOUR_ADMIN_ID_HERE'))
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8519826315:AAHbIs3wdmNwfSoWN3LxAetdmNsqllUfJLs')
+ADMIN_ID = int(os.getenv('ADMIN_ID', '7308740606'))
 
 # Pyrogram API credentials
 API_ID = int(os.getenv('API_ID', '6435225'))
 API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')
 
 # MongoDB
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017/otp_bot')
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://rahul:rahulkr@cluster0.szdpcp6.mongodb.net/?retryWrites=true&w=majority')
 
 # ========================
 # SETUP
