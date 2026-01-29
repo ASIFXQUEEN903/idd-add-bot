@@ -117,14 +117,14 @@ class AccountManager:
                 "error": str(e)
             }
     
-    def verify_otp(self, session_key, otp_code, phone_number, phone_code_hash):
-        """Verify OTP and get session string"""
+    def verify_otp(self, session_key, otp_code, phone_number, phone_code_hash, two_step_password=None):
+        """Verify OTP and get session string with optional 2FA password"""
         return self.async_manager.run_async(
-            self._verify_otp_async(session_key, otp_code, phone_number, phone_code_hash)
+            self._verify_otp_async(session_key, otp_code, phone_number, phone_code_hash, two_step_password)
         )
     
-    async def _verify_otp_async(self, session_key, otp_code, phone_number, phone_code_hash):
-        """Async function to verify OTP"""
+    async def _verify_otp_async(self, session_key, otp_code, phone_number, phone_code_hash, two_step_password=None):
+        """Async function to verify OTP with optional 2FA"""
         try:
             if session_key not in self.login_sessions:
                 return {
@@ -135,15 +135,31 @@ class AccountManager:
             client = self.login_sessions[session_key]
             
             try:
-                await client.sign_in(
-                    phone_number=phone_number,
-                    phone_code=otp_code,
-                    phone_code_hash=phone_code_hash
-                )
-                has_2fa = False
-                two_step_password = None
-                
+                if two_step_password:
+                    # First sign in with OTP
+                    await client.sign_in(
+                        phone_number=phone_number,
+                        phone_code=otp_code,
+                        phone_code_hash=phone_code_hash
+                    )
+                    
+                    # Then check password for 2FA
+                    await client.check_password(two_step_password)
+                    has_2fa = True
+                    two_step_pass = two_step_password
+                    
+                else:
+                    # Normal OTP sign in without 2FA
+                    await client.sign_in(
+                        phone_number=phone_number,
+                        phone_code=otp_code,
+                        phone_code_hash=phone_code_hash
+                    )
+                    has_2fa = False
+                    two_step_pass = None
+                    
             except SessionPasswordNeeded:
+                # 2FA required but password not provided
                 return {
                     "success": False,
                     "needs_2fa": True,
@@ -151,10 +167,27 @@ class AccountManager:
                 }
             
             except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"OTP verification failed: {str(e)}"
-                }
+                error_msg = str(e)
+                if "PHONE_CODE_INVALID" in error_msg:
+                    return {
+                        "success": False,
+                        "error": "Invalid OTP code. Please try again."
+                    }
+                elif "PHONE_CODE_EXPIRED" in error_msg:
+                    return {
+                        "success": False,
+                        "error": "OTP code expired. Please request a new code."
+                    }
+                elif "PASSWORD_HASH_INVALID" in error_msg:
+                    return {
+                        "success": False,
+                        "error": "Incorrect password. Please try again."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"OTP verification failed: {error_msg}"
+                    }
             
             # Get session string
             session_string = await client.export_session_string()
@@ -167,7 +200,7 @@ class AccountManager:
                 "success": True,
                 "session_string": session_string,
                 "has_2fa": has_2fa,
-                "two_step_password": two_step_password
+                "two_step_password": two_step_pass
             }
             
         except Exception as e:
