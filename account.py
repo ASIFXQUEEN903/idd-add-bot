@@ -1,16 +1,16 @@
 """
-Fixed Pyrogram Account Manager - Isolated Async Operations
+Fixed Pyrogram Account Manager with OTP Expiration Handling
 """
 
 import logging
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pyrogram import Client
 from pyrogram.errors import (
     PhoneNumberInvalid, PhoneCodeInvalid,
     PhoneCodeExpired, SessionPasswordNeeded,
-    FloodWait, PhoneCodeEmpty
+    FloodWait, PhoneCodeEmpty, AuthKeyUnregistered
 )
 
 logger = logging.getLogger(__name__)
@@ -20,13 +20,13 @@ class AccountManager:
     def __init__(self, api_id, api_hash):
         self.api_id = api_id
         self.api_hash = api_hash
-        # Store session data instead of client objects
-        self.login_data = {}  # {session_key: {"phone": "", "phone_code_hash": "", "client_name": ""}}
+        # Store session data with timestamp
+        self.login_sessions = {}  # {session_key: {"phone": "", "phone_code_hash": "", "timestamp": "", "client_name": ""}}
     
     def send_otp(self, phone_number):
-        """Send OTP to phone number - COMPLETELY ISOLATED"""
+        """Send OTP to phone number"""
         try:
-            return asyncio.run(self._send_otp_isoloated(phone_number))
+            return asyncio.run(self._send_otp_async(phone_number))
         except Exception as e:
             logger.error(f"Send OTP error: {e}")
             return {
@@ -34,10 +34,13 @@ class AccountManager:
                 "error": f"Failed to send OTP: {str(e)}"
             }
     
-    async def _send_otp_isoloated(self, phone_number):
-        """Isolated async function to send OTP"""
+    async def _send_otp_async(self, phone_number):
+        """Async function to send OTP"""
         client = None
         try:
+            # Clean phone number
+            phone_number = phone_number.strip()
+            
             client_name = f"login_{int(datetime.now().timestamp())}"
             client = Client(
                 name=client_name,
@@ -47,18 +50,23 @@ class AccountManager:
                 no_updates=True
             )
             
+            logger.info(f"Connecting to send OTP to {phone_number}")
             await client.connect()
-            sent_code = await client.send_code(phone_number)
             
-            # Store only the data, not the client
+            sent_code = await client.send_code(phone_number)
+            logger.info(f"OTP sent to {phone_number}, phone_code_hash: {sent_code.phone_code_hash}")
+            
+            # Store session data with timestamp
             session_key = f"{phone_number}_{int(datetime.now().timestamp())}"
-            self.login_data[session_key] = {
+            self.login_sessions[session_key] = {
                 "phone": phone_number,
                 "phone_code_hash": sent_code.phone_code_hash,
+                "timestamp": datetime.now(),
                 "client_name": client_name
             }
             
-            logger.info(f"OTP sent to {phone_number}")
+            # Clean up old sessions
+            self._cleanup_old_sessions()
             
             # IMPORTANT: Disconnect immediately
             await client.disconnect()
@@ -70,6 +78,7 @@ class AccountManager:
             }
             
         except FloodWait as e:
+            logger.warning(f"Flood wait for {phone_number}: {e.value} seconds")
             if client:
                 try:
                     await client.disconnect()
@@ -80,7 +89,7 @@ class AccountManager:
                 "error": f"Please wait {e.value} seconds before trying again"
             }
         except Exception as e:
-            logger.error(f"Send OTP isolated error: {e}")
+            logger.error(f"Send OTP error for {phone_number}: {e}")
             if client:
                 try:
                     await client.disconnect()
@@ -92,9 +101,9 @@ class AccountManager:
             }
     
     def verify_otp(self, session_key, otp_code, phone_number, phone_code_hash):
-        """Verify OTP - COMPLETELY ISOLATED"""
+        """Verify OTP and get session string"""
         try:
-            return asyncio.run(self._verify_otp_isolated(session_key, otp_code, phone_number, phone_code_hash))
+            return asyncio.run(self._verify_otp_async(session_key, otp_code, phone_number, phone_code_hash))
         except Exception as e:
             logger.error(f"Verify OTP error: {e}")
             return {
@@ -102,18 +111,31 @@ class AccountManager:
                 "error": f"OTP verification failed: {str(e)}"
             }
     
-    async def _verify_otp_isolated(self, session_key, otp_code, phone_number, phone_code_hash):
-        """Isolated async function to verify OTP"""
+    async def _verify_otp_async(self, session_key, otp_code, phone_number, phone_code_hash):
+        """Async function to verify OTP"""
         client = None
         try:
-            # Check if session exists
-            if session_key not in self.login_data:
+            # Check if session exists and is not expired
+            if session_key not in self.login_sessions:
+                logger.warning(f"Session key not found: {session_key}")
                 return {
                     "success": False,
-                    "error": "Session expired. Please start again."
+                    "error": "Session expired. Please start again with /start"
                 }
             
-            # Create NEW client for this verification
+            session_data = self.login_sessions[session_key]
+            session_time = session_data.get("timestamp")
+            
+            # Check if session is too old (more than 10 minutes)
+            if session_time and datetime.now() - session_time > timedelta(minutes=10):
+                logger.warning(f"Session expired: {session_key}, created at {session_time}")
+                del self.login_sessions[session_key]
+                return {
+                    "success": False,
+                    "error": "OTP code expired. Please request a new code with /start"
+                }
+            
+            # Create NEW client for verification
             client_name = f"verify_{int(datetime.now().timestamp())}"
             client = Client(
                 name=client_name,
@@ -123,10 +145,12 @@ class AccountManager:
                 no_updates=True
             )
             
+            logger.info(f"Connecting to verify OTP for {phone_number}")
             await client.connect()
             
             try:
                 # Sign in with OTP
+                logger.info(f"Signing in with OTP for {phone_number}")
                 await client.sign_in(
                     phone_number=phone_number,
                     phone_code=otp_code,
@@ -134,22 +158,55 @@ class AccountManager:
                 )
                 has_2fa = False
                 two_step_password = None
+                logger.info(f"Successfully signed in for {phone_number}")
                 
-            except SessionPasswordNeeded:
-                # Store session data for 2FA
-                # IMPORTANT: Don't keep the client, just store data
+            except PhoneCodeExpired:
+                logger.warning(f"Phone code expired for {phone_number}")
+                await client.disconnect()
+                # Remove expired session
+                if session_key in self.login_sessions:
+                    del self.login_sessions[session_key]
+                return {
+                    "success": False,
+                    "error": "OTP code has expired. Please request a new code with /start"
+                }
+                
+            except PhoneCodeInvalid:
+                logger.warning(f"Invalid phone code for {phone_number}")
                 await client.disconnect()
                 return {
                     "success": False,
+                    "error": "Invalid OTP code. Please enter the correct code."
+                }
+                
+            except SessionPasswordNeeded:
+                logger.info(f"2FA required for {phone_number}")
+                await client.disconnect()
+                # Store client for 2FA (we need to keep this one)
+                # But create a new session key for 2fa
+                twofa_session_key = f"2fa_{session_key}_{int(datetime.now().timestamp())}"
+                self.login_sessions[twofa_session_key] = {
+                    "phone": phone_number,
+                    "original_session": session_key,
+                    "timestamp": datetime.now(),
+                    "needs_password": True
+                }
+                # Remove the old session
+                if session_key in self.login_sessions:
+                    del self.login_sessions[session_key]
+                    
+                return {
+                    "success": False,
                     "needs_2fa": True,
-                    "session_key": session_key
+                    "session_key": twofa_session_key
                 }
             
             except Exception as e:
+                logger.error(f"Sign in error for {phone_number}: {e}")
                 await client.disconnect()
-                # Remove session data on error
-                if session_key in self.login_data:
-                    del self.login_data[session_key]
+                # Remove session on error
+                if session_key in self.login_sessions:
+                    del self.login_sessions[session_key]
                 return {
                     "success": False,
                     "error": f"OTP verification failed: {str(e)}"
@@ -157,13 +214,13 @@ class AccountManager:
             
             # Get session string
             session_string = await client.export_session_string()
+            logger.info(f"Got session string for {phone_number}")
+            
             await client.disconnect()
             
             # Remove session data
-            if session_key in self.login_data:
-                del self.login_data[session_key]
-            
-            logger.info(f"Successfully verified OTP for {phone_number}")
+            if session_key in self.login_sessions:
+                del self.login_sessions[session_key]
             
             return {
                 "success": True,
@@ -173,24 +230,24 @@ class AccountManager:
             }
             
         except Exception as e:
-            logger.error(f"Verify OTP isolated error: {e}")
+            logger.error(f"Verify OTP error: {e}")
             if client:
                 try:
                     await client.disconnect()
                 except:
                     pass
-            # Clean up session data
-            if session_key in self.login_data:
-                del self.login_data[session_key]
+            # Clean up session
+            if session_key in self.login_sessions:
+                del self.login_sessions[session_key]
             return {
                 "success": False,
                 "error": str(e)
             }
     
     def verify_2fa(self, session_key, password):
-        """Verify 2FA password - COMPLETELY ISOLATED"""
+        """Verify 2FA password"""
         try:
-            return asyncio.run(self._verify_2fa_isolated(session_key, password))
+            return asyncio.run(self._verify_2fa_async(session_key, password))
         except Exception as e:
             logger.error(f"Verify 2FA error: {e}")
             return {
@@ -198,20 +255,28 @@ class AccountManager:
                 "error": f"2FA verification failed: {str(e)}"
             }
     
-    async def _verify_2fa_isolated(self, session_key, password):
-        """Isolated async function to verify 2FA"""
+    async def _verify_2fa_async(self, session_key, password):
+        """Async function to verify 2FA"""
         client = None
         try:
-            if session_key not in self.login_data:
+            if session_key not in self.login_sessions:
                 return {
                     "success": False,
-                    "error": "Session expired. Please start again."
+                    "error": "Session expired. Please start again with /start"
                 }
             
-            # Get phone from session data
-            phone = self.login_data[session_key]["phone"]
+            session_data = self.login_sessions[session_key]
+            phone = session_data.get("phone")
             
-            # Create NEW client for 2FA
+            if not phone:
+                return {
+                    "success": False,
+                    "error": "Invalid session. Please start again."
+                }
+            
+            # For 2FA, we need to create a new client and complete the login
+            # This is a simplified approach - in reality, we should store more state
+            
             client_name = f"verify_2fa_{int(datetime.now().timestamp())}"
             client = Client(
                 name=client_name,
@@ -223,34 +288,26 @@ class AccountManager:
             
             await client.connect()
             
-            # First sign in (will need password)
+            # Note: This is a simplified 2FA approach
+            # In a real scenario, we would need to store the original client state
             try:
-                # Note: This is a simplified approach
-                # In real scenario, you might need the original phone_code_hash
-                # But since we can't store clients, we'll handle differently
-                pass
-            except:
-                pass
-            
-            # Try to check password (this assumes we're already at password stage)
-            try:
+                # This assumes we're already at password stage
+                # We might need to redo the OTP verification first
                 await client.check_password(password)
             except Exception as e:
                 await client.disconnect()
-                if session_key in self.login_data:
-                    del self.login_data[session_key]
+                if session_key in self.login_sessions:
+                    del self.login_sessions[session_key]
                 return {
                     "success": False,
-                    "error": f"2FA verification failed: {str(e)}"
+                    "error": f"Password verification failed: {str(e)}"
                 }
             
-            # Get session string
             session_string = await client.export_session_string()
             await client.disconnect()
             
-            # Remove session data
-            if session_key in self.login_data:
-                del self.login_data[session_key]
+            if session_key in self.login_sessions:
+                del self.login_sessions[session_key]
             
             return {
                 "success": True,
@@ -260,32 +317,31 @@ class AccountManager:
             }
             
         except Exception as e:
-            logger.error(f"2FA verification isolated error: {e}")
+            logger.error(f"2FA verification error: {e}")
             if client:
                 try:
                     await client.disconnect()
                 except:
                     pass
-            if session_key in self.login_data:
-                del self.login_data[session_key]
+            if session_key in self.login_sessions:
+                del self.login_sessions[session_key]
             return {
                 "success": False,
                 "error": str(e)
             }
     
     def get_latest_otp(self, session_string, phone):
-        """Manually fetch latest OTP - COMPLETELY ISOLATED"""
+        """Manually fetch latest OTP from Telegram messages"""
         try:
-            return asyncio.run(self._get_latest_otp_isolated(session_string, phone))
+            return asyncio.run(self._get_latest_otp_async(session_string, phone))
         except Exception as e:
             logger.error(f"Get OTP error: {e}")
             return None
     
-    async def _get_latest_otp_isolated(self, session_string, phone):
-        """Isolated async function to fetch OTP"""
+    async def _get_latest_otp_async(self, session_string, phone):
+        """Async function to fetch OTP"""
         client = None
         try:
-            # Create client from session string
             client = Client(
                 name=f"otp_fetch_{int(datetime.now().timestamp())}",
                 session_string=session_string,
@@ -300,38 +356,27 @@ class AccountManager:
             latest_otp = None
             latest_time = None
             
-            # Search in Telegram chat
+            # Search in recent messages (last 20)
             try:
-                async for message in client.get_chat_history("Telegram", limit=20):
-                    if message.text and "code" in message.text.lower():
-                        otp_matches = re.findall(r'\b\d{5}\b', message.text)
-                        if otp_matches:
-                            message_time = message.date.timestamp() if message.date else 0
-                            if latest_time is None or message_time > latest_time:
-                                latest_time = message_time
-                                latest_otp = otp_matches[0]
-            except:
-                pass
-            
-            # Search in 777000
-            if not latest_otp:
-                try:
-                    async for message in client.get_chat_history(777000, limit=20):
-                        if message.text and "code" in message.text.lower():
-                            otp_matches = re.findall(r'\b\d{5}\b', message.text)
-                            if otp_matches:
+                async for message in client.get_chat_history("me", limit=20):
+                    if message.text:
+                        # Look for OTP patterns
+                        otp_matches = re.findall(r'\b\d{5,6}\b', message.text)
+                        for otp in otp_matches:
+                            # Check if it's likely an OTP (5-6 digits, not part of longer number)
+                            if len(otp) in [5, 6] and message.text.find(f" {otp} ") != -1:
                                 message_time = message.date.timestamp() if message.date else 0
                                 if latest_time is None or message_time > latest_time:
                                     latest_time = message_time
-                                    latest_otp = otp_matches[0]
-                except:
-                    pass
+                                    latest_otp = otp
+            except Exception as e:
+                logger.warning(f"Search in chat failed: {e}")
             
             await client.disconnect()
             return latest_otp
             
         except Exception as e:
-            logger.error(f"Get OTP isolated error: {e}")
+            logger.error(f"Get OTP error: {e}")
             if client:
                 try:
                     await client.disconnect()
@@ -339,25 +384,22 @@ class AccountManager:
                     pass
             return None
     
-    def cleanup_old_sessions(self):
-        """Cleanup old sessions"""
+    def _cleanup_old_sessions(self):
+        """Cleanup old sessions (older than 30 minutes)"""
         try:
-            current_time = datetime.now().timestamp()
+            cutoff_time = datetime.now() - timedelta(minutes=30)
             to_remove = []
             
-            for session_key, data in self.login_data.items():
-                try:
-                    timestamp = int(session_key.split('_')[-1])
-                    if current_time - timestamp > 1800:  # 30 minutes
-                        to_remove.append(session_key)
-                except:
-                    continue
+            for session_key, data in self.login_sessions.items():
+                timestamp = data.get("timestamp")
+                if timestamp and timestamp < cutoff_time:
+                    to_remove.append(session_key)
             
             for session_key in to_remove:
-                del self.login_data[session_key]
+                del self.login_sessions[session_key]
             
             if to_remove:
                 logger.info(f"Cleaned up {len(to_remove)} old sessions")
                 
         except Exception as e:
-            logger.error(f"Cleanup sessions error: {e}")
+            logger.error(f"Cleanup error: {e}")
