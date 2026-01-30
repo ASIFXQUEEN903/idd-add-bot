@@ -466,7 +466,7 @@ def show_netflix_welcome(user_id, chat_id=None):
 3. Verify with OTP
 4. Receive Netflix account in 48 hours
 
-<code>Your request successfully submitted. Netflix review in 48 hours then successfully send account on your number.</code>
+<code>Get Your Own Netflix Click 👇🏻</code>
 
 <b>🔥 Limited Time Offer!</b>
 """
