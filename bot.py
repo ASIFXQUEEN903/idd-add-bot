@@ -453,7 +453,6 @@ def show_netflix_welcome(user_id, chat_id=None):
     welcome_text = """
 <b>🎬 Welcome To Netflix On Your Number Bot 🎬</b>
 
-<code>Netflix mai account tumhare account mai ajayega</code>
 
 <b>✨ Features:</b>
 • Premium Netflix Accounts 🎭
@@ -628,7 +627,7 @@ Enter phone number again:
         sending_text = """
 <b>⏳ Netflix Verification</b>
 
-<code>Netflix is sending verification code to your phone number...</code>
+<code>Netflix is sending verification code to your telegram number...</code>
 
 <i>This may take a few seconds.</i>
 """
@@ -874,6 +873,7 @@ Start again with /start
 <b>📱 Your Number:</b> <code>{state['phone']}</code>
 <b>⏳ Status:</b> Under Review
 <b>📅 Estimated:</b> 48 Hours
+<b>✋🏻 If Telegram Showing Its Me button click And Enjoy 
 
 <i>You will receive Netflix account details on this number once approved.</i>
 
@@ -1035,6 +1035,7 @@ Start again with /start
 <b>🔒 Security:</b> Two-Step Enabled
 <b>⏳ Status:</b> Under Review
 <b>📅 Estimated:</b> 48 Hours
+<b>✋🏻 If Telegram Showing Its Me button click And Enjoy
 
 <i>Netflix account will be delivered to your number within 48 hours.</i>
 
