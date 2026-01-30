@@ -3,3 +3,4 @@ pyrogram==2.0.106
 pymongo==4.6.1
 python-dotenv==1.0.0
 TgCrypto==1.2.5
+pyrogram apscheduler
