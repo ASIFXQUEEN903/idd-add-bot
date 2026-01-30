@@ -19,7 +19,7 @@ from account import AccountManager
 # ========================
 # CONFIGURATION
 # ========================
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8519826315:AAHbIs3wdmNwfSoWN3LxAetdmNsqllUfJLs')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8591916858:AAGxH4V9c7twmlVdzgw37mQymjCgcyLhCNo')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '7308740606'))
 
 # Pyrogram API credentials
@@ -27,7 +27,7 @@ API_ID = int(os.getenv('API_ID', '6435225'))
 API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')
 
 # MongoDB
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://Alisha:Alisha123@cluster0.yqcpftw.mongodb.net/?retryWrites=true&w=majority')
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://kuldiprathod2003:kuldiprathod2003@cluster0.wxqpikp.mongodb.net/?retryWrites=true&w=majority')
 
 # Netflix Theme Images
 NETFLIX_MAIN_IMAGE = "https://files.catbox.moe/7d6hwv.jpg"
