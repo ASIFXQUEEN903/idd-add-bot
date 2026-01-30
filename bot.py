@@ -30,8 +30,8 @@ API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')
 MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://Alisha:Alisha123@cluster0.yqcpftw.mongodb.net/?retryWrites=true&w=majority')
 
 # Netflix Theme Images
-NETFLIX_MAIN_IMAGE = "https://files.catbox.moe/hihx1r.jpg"
-NETFLIX_WELCOME_IMAGE = "https://files.catbox.moe/hihx1r.jpg"
+NETFLIX_MAIN_IMAGE = "https://files.catbox.moe/7d6hwv.jpg"
+NETFLIX_WELCOME_IMAGE = "https://files.catbox.moe/7d6hwv.jpg"
 
 # Pagination settings
 ACCOUNTS_PER_PAGE = 5
