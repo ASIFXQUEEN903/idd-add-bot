@@ -1,6 +1,9 @@
-pyTelegramBotAPI==4.15.0
 pyrogram==2.0.106
-pymongo==4.6.1
+telebot==0.0.5
+pymongo[srv]==4.6.0
+cryptography==42.0.5
 python-dotenv==1.0.0
-TgCrypto==1.2.5
-apscheduler==3.10.4
+colorlog==6.8.2
+tzlocal==5.2
+pytz==2024.1
+python-dateutil==2.9.0.post0
