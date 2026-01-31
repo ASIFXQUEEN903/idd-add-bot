@@ -1073,8 +1073,8 @@ async def test_account_manager():
     print("Testing Account Manager...")
     
     # Replace with your API credentials
-    API_ID = 123456  # Your API ID
-    API_HASH = "your_api_hash_here"
+    API_ID = 6435225  # Your API ID
+    API_HASH = "4e984ea35f854762dcde906dce426c2d"
     
     manager = ProfessionalAccountManager(API_ID, API_HASH)
     
