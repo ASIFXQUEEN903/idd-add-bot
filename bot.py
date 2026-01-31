@@ -33,7 +33,8 @@ from account import ProfessionalAccountManager
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')  # Remove default in production
 ADMIN_ID_STR = os.getenv('ADMIN_ID', '0')  # String mein lein
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR.isdigit() else 0
-API_ID = int(os.getenv('API_ID', 0))  # Remove default in production
+API_ID_STR = os.getenv('API_ID', '0')
+API_ID = int(API_ID_STR) if API_ID_STR.isdigit() else 0  # Remove default in production
 API_HASH = os.getenv('API_HASH', '')  # Remove default in production
 
 # MongoDB Configuration
