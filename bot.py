@@ -30,13 +30,13 @@ from account import ProfessionalAccountManager
 # CONFIGURATION
 # ========================
 # Get from environment variables (MUST SET IN PRODUCTION)
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8591916858:AAGxH4V9c7twmlVdzgw37mQymjCgcyLhCNo')  # Remove default in production
-ADMIN_ID = int(os.getenv('ADMIN_ID', 7308740606))  # Remove default in production
-API_ID = int(os.getenv('API_ID', 6435225))  # Remove default in production
-API_HASH = os.getenv('API_HASH', '4e984ea35f854762dcde906dce426c2d')  # Remove default in production
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')  # Remove default in production
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # Remove default in production
+API_ID = int(os.getenv('API_ID', 0))  # Remove default in production
+API_HASH = os.getenv('API_HASH', '')  # Remove default in production
 
 # MongoDB Configuration
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb+srv://kuldiprathod2003:kuldiprathod2003@cluster0.wxqpikp.mongodb.net/?retryWrites=true&w=majority')  # Remove default in production
+MONGO_URL = os.getenv('MONGO_URL', '')  # Remove default in production
 MONGO_DB_NAME = "netflix_otp_bot"
 
 # Security Configuration
