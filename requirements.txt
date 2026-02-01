@@ -1,6 +1,7 @@
 pyrogram==2.0.106
 telebot==0.0.5
 pymongo[srv]==4.6.0
+TgCrypto==1.2.5
 cryptography==42.0.5
 python-dotenv==1.0.0
 colorlog==6.8.2
