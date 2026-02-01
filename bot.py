@@ -1,6 +1,6 @@
 """
-FIXED NETFLIX OTP BOT v3.0
-With proper database connection handling
+FIXED NETFLIX OTP BOT v4.0
+With improved OTP fetching from ALL messages
 """
 
 import os
@@ -25,7 +25,8 @@ from otp import (
     safe_error_message, validate_phone, validate_otp,
     format_phone_display, escape_html, create_plain_text_message,
     get_paginated_accounts, format_accounts_list, create_accounts_keyboard,
-    create_account_detail_keyboard, format_account_details, format_otp_result
+    create_account_detail_keyboard, format_account_details, 
+    format_otp_result, format_no_otp_found
 )
 
 # ========================
@@ -471,11 +472,11 @@ Recent OTPs:
             
             elif data.startswith("getotp_") and user_id == ADMIN_ID:
                 account_id = data.split("_")[1]
-                self._get_account_otp(user_id, chat_id, account_id)
+                self._get_account_otp(user_id, chat_id, account_id, call.id)
             
             elif data.startswith("remove_") and user_id == ADMIN_ID:
                 account_id = data.split("_")[1]
-                self._remove_account(user_id, chat_id, account_id)
+                self._remove_account(user_id, chat_id, account_id, call.id)
             
             elif data == "otp_logs" and user_id == ADMIN_ID:
                 self._show_otp_logs(user_id, chat_id)
@@ -606,7 +607,7 @@ Recent OTPs:
             parse_mode="HTML"
         )
     
-    def _get_account_otp(self, user_id: int, chat_id: int, account_id: str):
+    def _get_account_otp(self, user_id: int, chat_id: int, account_id: str, callback_id: str = None):
         """Get latest OTP for account"""
         if user_id != ADMIN_ID:
             return
@@ -621,25 +622,27 @@ Recent OTPs:
         
         account = self.db.get_account(account_id)
         if not account:
-            try:
-                self.bot.answer_callback_query(
-                    call_id=chat_id,
-                    text="Account not found",
-                    show_alert=True
-                )
-            except:
-                pass
+            if callback_id:
+                try:
+                    self.bot.answer_callback_query(
+                        callback_id,
+                        "Account not found",
+                        show_alert=True
+                    )
+                except:
+                    pass
             return
         
         # Show fetching message
-        try:
-            self.bot.answer_callback_query(
-                call_id=chat_id,
-                text="⏳ Fetching OTP...",
-                show_alert=False
-            )
-        except:
-            pass
+        if callback_id:
+            try:
+                self.bot.answer_callback_query(
+                    callback_id,
+                    "⏳ Fetching OTP...",
+                    show_alert=False
+                )
+            except:
+                pass
         
         try:
             # Fetch OTP
@@ -655,7 +658,7 @@ Recent OTPs:
                 
                 self._send_safe_message(
                     chat_id,
-                    f"📱 No OTP Found\n\nPhone: {format_phone_display(account['phone'])}\n\nNo OTP found in recent messages.",
+                    format_no_otp_found(account["phone"]),
                     markup=markup,
                     photo_url=NETFLIX_MAIN_IMAGE,
                     parse_mode="HTML"
@@ -684,16 +687,17 @@ Recent OTPs:
             
         except Exception as e:
             logger.error(f"Get OTP error: {e}")
-            try:
-                self.bot.answer_callback_query(
-                    call_id=chat_id,
-                    text=f"Error: {str(e)[:50]}",
-                    show_alert=True
-                )
-            except:
-                pass
+            if callback_id:
+                try:
+                    self.bot.answer_callback_query(
+                        callback_id,
+                        f"Error: {str(e)[:50]}",
+                        show_alert=True
+                    )
+                except:
+                    pass
     
-    def _remove_account(self, user_id: int, chat_id: int, account_id: str):
+    def _remove_account(self, user_id: int, chat_id: int, account_id: str, callback_id: str = None):
         """Remove account (logout)"""
         if user_id != ADMIN_ID:
             return
@@ -701,14 +705,15 @@ Recent OTPs:
         # Confirm removal
         account = self.db.get_account(account_id)
         if not account:
-            try:
-                self.bot.answer_callback_query(
-                    call_id=chat_id,
-                    text="Account not found",
-                    show_alert=True
-                )
-            except:
-                pass
+            if callback_id:
+                try:
+                    self.bot.answer_callback_query(
+                        callback_id,
+                        "Account not found",
+                        show_alert=True
+                    )
+                except:
+                    pass
             return
         
         # Remove from database
@@ -730,14 +735,15 @@ Recent OTPs:
                 parse_mode="HTML"
             )
         else:
-            try:
-                self.bot.answer_callback_query(
-                    call_id=chat_id,
-                    text="Failed to remove account",
-                    show_alert=True
-                )
-            except:
-                pass
+            if callback_id:
+                try:
+                    self.bot.answer_callback_query(
+                        callback_id,
+                        "Failed to remove account",
+                        show_alert=True
+                    )
+                except:
+                    pass
     
     def _show_otp_logs(self, user_id: int, chat_id: int):
         """Show OTP logs"""
