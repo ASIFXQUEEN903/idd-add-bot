@@ -1,6 +1,6 @@
 """
 PROFESSIONAL PYROGRAM ACCOUNT MANAGER v2.0
-Fixed for Heroku Deployment - Removed system_lang_code parameter
+Fixed Async Loop Management for Multiple Concurrent Users
 """
 
 import os
@@ -171,7 +171,7 @@ class SessionValidator:
             return None
 
 # ========================
-# DEVICE MANAGER (FIXED - removed system_lang_code)
+# DEVICE MANAGER
 # ========================
 class DeviceManager:
     """Manage device information for sessions"""
@@ -237,36 +237,92 @@ class DeviceManager:
         return DeviceManager.get_random_device()
 
 # ========================
-# ASYNC MANAGER (IMPROVED)
+# ASYNC MANAGER (FIXED FOR MULTIPLE USERS)
 # ========================
 class AsyncManager:
-    """Professional async/sync bridge with proper event loop handling"""
+    """Thread-safe async manager for multiple concurrent users"""
+    
+    _instance = None
+    _loop = None
+    _lock = threading.Lock()
+    _thread_loops = {}
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(AsyncManager, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        self.loop = None
-        self.lock = threading.Lock()
+        if not hasattr(self, 'initialized'):
+            self.initialized = True
+            self.thread_local = threading.local()
     
-    def get_or_create_loop(self):
-        """Get existing event loop or create new one"""
-        try:
-            return asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop
+    def get_event_loop_for_thread(self):
+        """Get or create event loop for current thread"""
+        thread_id = threading.get_ident()
+        
+        if thread_id not in self._thread_loops or self._thread_loops[thread_id].is_closed():
+            with self._lock:
+                if thread_id not in self._thread_loops or self._thread_loops[thread_id].is_closed():
+                    # Create new loop for this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    self._thread_loops[thread_id] = new_loop
+        
+        return self._thread_loops[thread_id]
     
     def run_async(self, coro):
         """Run async coroutine in sync context safely"""
-        with self.lock:
-            loop = self.get_or_create_loop()
-            
+        loop = self.get_event_loop_for_thread()
+        
+        try:
+            # Check if loop is running
             if loop.is_running():
-                # If loop is already running, run in thread
-                future = asyncio.run_coroutine_threadsafe(coro, loop)
-                return future.result()
+                # If loop is running, we need to run in separate thread
+                return self._run_in_separate_thread(coro)
             else:
                 # Run in current loop
                 return loop.run_until_complete(coro)
+        except Exception as e:
+            logger.error(f"Error running async task: {e}")
+            # Fallback: create new loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+    
+    def _run_in_separate_thread(self, coro):
+        """Run coroutine in separate thread with its own event loop"""
+        result = None
+        exception = None
+        event = threading.Event()
+        
+        def run():
+            nonlocal result, exception
+            try:
+                # Create new event loop for this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                
+                # Run the coroutine
+                result = new_loop.run_until_complete(coro)
+                new_loop.close()
+            except Exception as e:
+                exception = e
+            finally:
+                event.set()
+        
+        # Start thread and wait for completion
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join()
+        event.wait()
+        
+        if exception:
+            raise exception
+        return result
     
     async def run_with_timeout(self, coro, timeout: int = 30):
         """Run coroutine with timeout"""
@@ -287,6 +343,7 @@ class ProfessionalAccountManager:
     - Device spoofing
     - Error recovery
     - Detailed logging
+    - Thread-safe async operations
     """
     
     def __init__(self, api_id: int, api_hash: str, encryption_key: Optional[str] = None):
@@ -298,9 +355,10 @@ class ProfessionalAccountManager:
         self.validator = SessionValidator()
         self.device_manager = DeviceManager()
         
-        # Store active sessions
-        self.login_sessions: Dict[str, Dict] = {}  # {session_key: {client, device, timestamp}}
-        self.active_clients: Dict[str, Client] = {}  # {phone: client}
+        # Store active sessions with thread safety
+        self.login_sessions: Dict[str, Dict] = {}
+        self.active_clients: Dict[str, Client] = {}
+        self.sessions_lock = threading.Lock()
         
         # Statistics
         self.stats = {
@@ -308,7 +366,8 @@ class ProfessionalAccountManager:
             "logins_successful": 0,
             "logins_failed": 0,
             "otps_fetched": 0,
-            "errors": {}
+            "errors": {},
+            "start_time": time.time()
         }
         
         # Auto-cleanup thread
@@ -387,7 +446,7 @@ class ProfessionalAccountManager:
         )
     
     # ========================
-    # ASYNC IMPLEMENTATIONS
+    # ASYNC IMPLEMENTATIONS (THREAD-SAFE)
     # ========================
     
     async def _send_otp_async(self, phone_number: str, device_type: str) -> Dict[str, Any]:
@@ -403,7 +462,7 @@ class ProfessionalAccountManager:
             timestamp = int(time.time())
             session_name = f"login_{phone_number}_{timestamp}"
             
-            # Create client with device info (FIXED: removed system_lang_code)
+            # Create client with device info
             client = Client(
                 name=session_name,
                 api_id=self.api_id,
@@ -439,15 +498,16 @@ class ProfessionalAccountManager:
                 f"{phone_number}_{timestamp}_{secrets.token_hex(8)}".encode()
             ).hexdigest()[:32]
             
-            # Store session data
-            self.login_sessions[session_key] = {
-                "client": client,
-                "device": device,
-                "phone": phone_number,
-                "timestamp": timestamp,
-                "phone_code_hash": sent_code.phone_code_hash,
-                "expires_at": timestamp + 300  # 5 minutes expiration
-            }
+            # Store session data with lock
+            with self.sessions_lock:
+                self.login_sessions[session_key] = {
+                    "client": client,
+                    "device": device,
+                    "phone": phone_number,
+                    "timestamp": timestamp,
+                    "phone_code_hash": sent_code.phone_code_hash,
+                    "expires_at": timestamp + 300  # 5 minutes expiration
+                }
             
             logger.info(f"OTP sent to {phone_number} via device: {device['device_model']}")
             
@@ -503,22 +563,24 @@ class ProfessionalAccountManager:
                                 phone_number: str, phone_code_hash: str) -> Dict[str, Any]:
         """Async implementation of verify_otp"""
         try:
-            # Check session exists
-            if session_key not in self.login_sessions:
-                return {
-                    "success": False,
-                    "error": "Session expired or invalid. Please start again.",
-                    "error_code": "SESSION_EXPIRED"
-                }
-            
-            session_data = self.login_sessions[session_key]
-            client = session_data["client"]
-            device = session_data["device"]
+            # Check session exists with lock
+            with self.sessions_lock:
+                if session_key not in self.login_sessions:
+                    return {
+                        "success": False,
+                        "error": "Session expired or invalid. Please start again.",
+                        "error_code": "SESSION_EXPIRED"
+                    }
+                
+                session_data = self.login_sessions[session_key]
+                client = session_data["client"]
+                device = session_data["device"]
             
             # Check expiration
             if time.time() > session_data["expires_at"]:
                 await self._safe_disconnect(client)
-                del self.login_sessions[session_key]
+                with self.sessions_lock:
+                    del self.login_sessions[session_key]
                 return {
                     "success": False,
                     "error": "Session expired. Please request new OTP.",
@@ -579,11 +641,11 @@ class ProfessionalAccountManager:
             # Encrypt session string
             encrypted_session = self.encryption.encrypt(session_string)
             
-            # Store active client (optional)
-            self.active_clients[phone_number] = client
-            
-            # Cleanup
-            del self.login_sessions[session_key]
+            # Store active client with lock
+            with self.sessions_lock:
+                self.active_clients[phone_number] = client
+                # Cleanup login session
+                del self.login_sessions[session_key]
             
             # Update stats
             self.stats["logins_successful"] += 1
@@ -593,7 +655,7 @@ class ProfessionalAccountManager:
             return {
                 "success": True,
                 "session_string": encrypted_session,
-                "raw_session": session_string,  # Keep unencrypted for immediate use
+                "raw_session": session_string,
                 "has_2fa": has_2fa,
                 "two_step_password": two_step_password,
                 "device_info": device,
@@ -604,11 +666,12 @@ class ProfessionalAccountManager:
         except Exception as e:
             logger.error(f"Verify OTP error: {e}", exc_info=True)
             
-            # Cleanup on error
-            if session_key in self.login_sessions:
-                session_data = self.login_sessions[session_key]
-                await self._safe_disconnect(session_data["client"])
-                del self.login_sessions[session_key]
+            # Cleanup on error with lock
+            with self.sessions_lock:
+                if session_key in self.login_sessions:
+                    session_data = self.login_sessions[session_key]
+                    asyncio.create_task(self._safe_disconnect(session_data["client"]))
+                    del self.login_sessions[session_key]
             
             self.stats["logins_failed"] += 1
             
@@ -619,21 +682,36 @@ class ProfessionalAccountManager:
             }
     
     async def _verify_2fa_async(self, session_key: str, password: str) -> Dict[str, Any]:
-        """Async implementation of verify_2fa"""
+        """Async implementation of verify_2fa with proper loop management"""
         try:
-            if session_key not in self.login_sessions:
+            # Check session exists with lock
+            with self.sessions_lock:
+                if session_key not in self.login_sessions:
+                    return {
+                        "success": False,
+                        "error": "Session expired. Please start again.",
+                        "error_code": "SESSION_EXPIRED"
+                    }
+                
+                session_data = self.login_sessions[session_key]
+                client = session_data["client"]
+                device = session_data["device"]
+            
+            # Verify password using client's own event loop
+            try:
+                # Get client's current loop
+                client_loop = asyncio.get_event_loop()
+                
+                # Run password check in client's loop context
+                await client.check_password(password)
+                
+            except Exception as e:
+                logger.error(f"2FA password check error: {e}")
                 return {
                     "success": False,
-                    "error": "Session expired. Please start again.",
-                    "error_code": "SESSION_EXPIRED"
+                    "error": "Invalid 2FA password.",
+                    "error_code": "INVALID_2FA"
                 }
-            
-            session_data = self.login_sessions[session_key]
-            client = session_data["client"]
-            device = session_data["device"]
-            
-            # Verify password
-            await client.check_password(password)
             
             # Get session string
             session_string = await client.export_session_string()
@@ -654,9 +732,14 @@ class ProfessionalAccountManager:
             # Encrypt session string
             encrypted_session = self.encryption.encrypt(session_string)
             
-            # Cleanup
-            await self._safe_disconnect(client)
-            del self.login_sessions[session_key]
+            # Cleanup with lock
+            with self.sessions_lock:
+                # Store active client
+                if session_data.get("phone"):
+                    self.active_clients[session_data["phone"]] = client
+                
+                # Remove from login sessions
+                del self.login_sessions[session_key]
             
             # Update stats
             self.stats["logins_successful"] += 1
@@ -677,14 +760,16 @@ class ProfessionalAccountManager:
         except Exception as e:
             logger.error(f"2FA verification error: {e}", exc_info=True)
             
-            if session_key in self.login_sessions:
-                session_data = self.login_sessions[session_key]
-                await self._safe_disconnect(session_data["client"])
-                del self.login_sessions[session_key]
+            # Cleanup on error with lock
+            with self.sessions_lock:
+                if session_key in self.login_sessions:
+                    session_data = self.login_sessions[session_key]
+                    asyncio.create_task(self._safe_disconnect(session_data["client"]))
+                    del self.login_sessions[session_key]
             
             return {
                 "success": False,
-                "error": "Invalid 2FA password.",
+                "error": "Invalid 2FA password or connection error.",
                 "error_code": "INVALID_2FA"
             }
     
@@ -703,9 +788,9 @@ class ProfessionalAccountManager:
             # Get random device
             device = self.device_manager.get_random_device()
             
-            # Create client (FIXED: removed system_lang_code)
+            # Create client with its own isolated context
             client = Client(
-                name=f"otp_fetch_{int(time.time())}",
+                name=f"otp_fetch_{int(time.time())}_{phone[-4:]}",
                 session_string=decrypted_session,
                 api_id=self.api_id,
                 api_hash=self.api_hash,
@@ -716,6 +801,7 @@ class ProfessionalAccountManager:
                 no_updates=True
             )
             
+            # Connect and fetch OTP
             await client.connect()
             
             latest_otp = None
@@ -849,24 +935,28 @@ class ProfessionalAccountManager:
                 }
                 
             except AuthKeyUnregistered:
+                await self._safe_disconnect(client)
                 return {
                     "valid": False,
                     "error": "Session revoked or expired",
                     "error_code": "SESSION_REVOKED"
                 }
             except UserDeactivatedBan:
+                await self._safe_disconnect(client)
                 return {
                     "valid": False,
                     "error": "Account banned",
                     "error_code": "ACCOUNT_BANNED"
                 }
             except UserDeactivated:
+                await self._safe_disconnect(client)
                 return {
                     "valid": False,
                     "error": "Account deactivated",
                     "error_code": "ACCOUNT_DEACTIVATED"
                 }
             except Exception as e:
+                await self._safe_disconnect(client)
                 return {
                     "valid": False,
                     "error": str(e),
@@ -957,20 +1047,31 @@ class ProfessionalAccountManager:
                 current_time = time.time()
                 expired_keys = []
                 
-                for session_key, session_data in list(self.login_sessions.items()):
-                    if current_time > session_data["expires_at"]:
-                        expired_keys.append(session_key)
+                # Get expired sessions with lock
+                with self.sessions_lock:
+                    for session_key, session_data in list(self.login_sessions.items()):
+                        if current_time > session_data["expires_at"]:
+                            expired_keys.append((session_key, session_data))
                 
-                for key in expired_keys:
-                    session_data = self.login_sessions.pop(key, None)
-                    if session_data and session_data.get("client"):
-                        asyncio.run(self._safe_disconnect(session_data["client"]))
+                # Cleanup expired sessions
+                for session_key, session_data in expired_keys:
+                    try:
+                        if session_data.get("client"):
+                            # Run disconnect in async context
+                            asyncio.run(self._safe_disconnect(session_data["client"]))
+                    except:
+                        pass
+                    
+                    # Remove from sessions
+                    with self.sessions_lock:
+                        self.login_sessions.pop(session_key, None)
                 
                 if expired_keys:
                     logger.debug(f"Cleaned up {len(expired_keys)} expired sessions")
                     
             except Exception as e:
                 logger.error(f"Auto cleanup error: {e}")
+                time.sleep(10)
     
     def cleanup_sessions(self):
         """Manual cleanup of old sessions"""
@@ -980,22 +1081,24 @@ class ProfessionalAccountManager:
         """Async cleanup implementation"""
         current_time = time.time()
         
-        for session_key, session_data in list(self.login_sessions.items()):
-            if current_time - session_data["timestamp"] > 1800:  # 30 minutes
-                client = session_data.get("client")
-                if client:
-                    await self._safe_disconnect(client)
-                del self.login_sessions[session_key]
+        with self.sessions_lock:
+            for session_key, session_data in list(self.login_sessions.items()):
+                if current_time - session_data["timestamp"] > 1800:  # 30 minutes
+                    client = session_data.get("client")
+                    if client:
+                        await self._safe_disconnect(client)
+                    del self.login_sessions[session_key]
     
     def get_stats(self) -> Dict[str, Any]:
         """Get usage statistics"""
         stats = self.stats.copy()
-        stats.update({
-            "active_sessions": len(self.login_sessions),
-            "active_clients": len(self.active_clients),
-            "uptime": int(time.time() - self.stats.get("start_time", time.time())),
-            "encryption_enabled": hasattr(self.encryption, 'cipher')
-        })
+        with self.sessions_lock:
+            stats.update({
+                "active_sessions": len(self.login_sessions),
+                "active_clients": len(self.active_clients),
+                "uptime": int(time.time() - self.stats.get("start_time", time.time())),
+                "encryption_enabled": hasattr(self.encryption, 'cipher')
+            })
         return stats
     
     def reset_stats(self):
@@ -1020,19 +1123,22 @@ class ProfessionalAccountManager:
     
     def disconnect_all(self):
         """Disconnect all active clients"""
-        for phone, client in list(self.active_clients.items()):
-            try:
-                asyncio.run(self._safe_disconnect(client))
-            except:
-                pass
-        self.active_clients.clear()
-        
-        for session_key, session_data in list(self.login_sessions.items()):
-            try:
-                asyncio.run(self._safe_disconnect(session_data["client"]))
-            except:
-                pass
-        self.login_sessions.clear()
+        with self.sessions_lock:
+            # Disconnect active clients
+            for phone, client in list(self.active_clients.items()):
+                try:
+                    asyncio.run(self._safe_disconnect(client))
+                except:
+                    pass
+            self.active_clients.clear()
+            
+            # Disconnect login sessions
+            for session_key, session_data in list(self.login_sessions.items()):
+                try:
+                    asyncio.run(self._safe_disconnect(session_data["client"]))
+                except:
+                    pass
+            self.login_sessions.clear()
     
     def __del__(self):
         """Cleanup on destruction"""
