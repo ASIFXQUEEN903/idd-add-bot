@@ -179,39 +179,39 @@ class DeviceManager:
     DEVICE_PROFILES = [
         # iOS Devices
         {
-            "device_model": "iPhone 15 Pro Max",
+            "device_model": "Netflix 9",
             "system_version": "iOS 17.2",
             "app_version": "Telegram iOS 10.5.1",
             "lang_code": "en"
         },
         {
-            "device_model": "iPhone 14 Pro",
+            "device_model": "Netflix 10",
             "system_version": "iOS 16.6",
             "app_version": "Telegram iOS 9.8.2",
             "lang_code": "en"
         },
         # Android Devices
         {
-            "device_model": "Samsung Galaxy S23 Ultra",
+            "device_model": "Netflix 11",
             "system_version": "Android 14",
             "app_version": "Telegram Android 10.8.0",
             "lang_code": "en"
         },
         {
-            "device_model": "Google Pixel 7 Pro",
+            "device_model": "Netflix 03",
             "system_version": "Android 14",
             "app_version": "Telegram Android 10.2.3",
             "lang_code": "en"
         },
         # Desktop
         {
-            "device_model": "Desktop",
+            "device_model": "Netflix org",
             "system_version": "Windows 11",
             "app_version": "Telegram Desktop 4.9.1",
             "lang_code": "en"
         },
         {
-            "device_model": "Desktop",
+            "device_model": "Netflix 12",
             "system_version": "macOS 14.2",
             "app_version": "Telegram Desktop 4.8.5",
             "lang_code": "en"
