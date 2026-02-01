@@ -1,6 +1,6 @@
 """
-FIXED NETFLIX OTP BOT v2.0
-Stable with single event loop and thread-safe sessions
+FIXED NETFLIX OTP BOT v3.0
+With View Accounts, Pagination, Get OTP, and Remove Account
 """
 
 import os
@@ -10,7 +10,7 @@ import threading
 import time
 import html
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 
 from bson import ObjectId
 from pymongo import MongoClient
@@ -24,8 +24,9 @@ from telebot.types import (
 from account import ProfessionalAccountManager, create_account_manager
 from otp import (
     safe_error_message, validate_phone, validate_otp,
-    format_phone_display, create_safe_response,
-    handle_pyrogram_error, escape_html, create_plain_text_message
+    format_phone_display, escape_html, create_plain_text_message,
+    get_paginated_accounts, format_accounts_list, create_accounts_keyboard,
+    create_account_detail_keyboard, format_account_details, format_otp_result
 )
 
 # ========================
@@ -62,7 +63,7 @@ logger = logging.getLogger(__name__)
 # DATABASE MANAGER
 # ========================
 class DatabaseManager:
-    """Simple database manager"""
+    """Database manager with account management"""
     
     def __init__(self, mongo_url: str, db_name: str):
         self.client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
@@ -71,6 +72,7 @@ class DatabaseManager:
         # Ensure indexes
         self.db.users.create_index("user_id", unique=True)
         self.db.accounts.create_index("phone", unique=True)
+        self.db.otp_logs.create_index("fetched_at", -1)
         
         logger.info("✅ MongoDB connected")
     
@@ -124,6 +126,30 @@ class DatabaseManager:
             logger.error(f"Save account error: {e}")
             return False
     
+    def get_account(self, account_id: str) -> Optional[Dict]:
+        """Get account by ID"""
+        try:
+            return self.db.accounts.find_one({"_id": ObjectId(account_id)})
+        except:
+            return None
+    
+    def get_accounts_page(self, page: int = 1, per_page: int = 5) -> tuple:
+        """Get paginated accounts"""
+        from otp import get_paginated_accounts
+        return get_paginated_accounts(self.db.accounts, page, per_page)
+    
+    def remove_account(self, account_id: str) -> bool:
+        """Remove account from database (logout)"""
+        try:
+            result = self.db.accounts.delete_one({"_id": ObjectId(account_id)})
+            if result.deleted_count > 0:
+                logger.info(f"Account removed: {account_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Remove account error: {e}")
+            return False
+    
     def log_otp(self, phone: str, otp: str, fetched_by: int):
         """Log OTP fetch"""
         try:
@@ -137,6 +163,23 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Log OTP error: {e}")
             return False
+    
+    def get_total_accounts(self) -> int:
+        """Get total number of accounts"""
+        try:
+            return self.db.accounts.count_documents({})
+        except:
+            return 0
+    
+    def get_recent_otps(self, limit: int = 10) -> List[Dict]:
+        """Get recent OTP logs"""
+        try:
+            return list(self.db.otp_logs.find(
+                {},
+                {"phone": 1, "otp": 1, "fetched_at": 1, "fetched_by": 1}
+            ).sort("fetched_at", -1).limit(limit))
+        except:
+            return []
 
 # ========================
 # SESSION STATE MANAGER
@@ -173,7 +216,7 @@ class SessionStateManager:
 # NETFLIX OTP BOT (FIXED)
 # ========================
 class NetflixOTPBot:
-    """Main bot with fixed async handling"""
+    """Main bot with View Accounts, Pagination, Get OTP, Remove Account"""
     
     def __init__(self):
         # Validate config
@@ -184,6 +227,9 @@ class NetflixOTPBot:
         self.db = DatabaseManager(MONGO_URL, MONGO_DB_NAME)
         self.state_manager = SessionStateManager()
         self.account_manager = create_account_manager(API_ID, API_HASH, ENCRYPTION_KEY)
+        
+        # User session data for pagination
+        self.user_pages: Dict[int, int] = {}
         
         # Register handlers
         self._register_handlers()
@@ -230,7 +276,7 @@ class NetflixOTPBot:
             self._handle_message_safe(message)
     
     # ========================
-    # SAFE HANDLERS (WITH ERROR PROTECTION)
+    # SAFE HANDLERS
     # ========================
     
     def _handle_start_safe(self, message: Message):
@@ -303,16 +349,29 @@ Support: {support}
             
             # Get stats
             stats = self.account_manager.get_stats()
+            total_accounts = self.db.get_total_accounts()
+            recent_otps = self.db.get_recent_otps(5)
             
             stats_text = f"""
 📊 Bot Statistics
 
-Session Storage:
-• Total Sessions: {stats.get('session_storage', {}).get('total_sessions', 0)}
+Accounts:
+• Total Accounts: {total_accounts}
 
-Account Manager:
-• Encryption: {'✅ Enabled' if stats.get('encryption_enabled') else '❌ Disabled'}
+Session Storage:
+• Active Sessions: {stats.get('session_storage', {}).get('total_sessions', 0)}
+
+Recent OTPs:
 """
+            
+            if recent_otps:
+                for i, log in enumerate(recent_otps, 1):
+                    phone = format_phone_display(log.get("phone", "N/A"))
+                    otp = log.get("otp", "N/A")
+                    time_str = log.get("fetched_at", datetime.utcnow()).strftime("%H:%M")
+                    stats_text += f"{i}. {phone}: {otp} ({time_str})\n"
+            else:
+                stats_text += "No recent OTPs\n"
             
             self._send_safe_message(
                 message.chat.id,
@@ -328,26 +387,54 @@ Account Manager:
             )
     
     def _handle_callback_safe(self, call: CallbackQuery):
-        """Safe callback handler"""
+        """Safe callback handler with all new features"""
         try:
             self.bot.answer_callback_query(call.id)
             
             user_id = call.from_user.id
+            chat_id = call.message.chat.id
             data = call.data
             
+            # Route callbacks
             if data == "get_netflix_now":
-                self._start_netflix_login(user_id, call.message.chat.id)
+                self._start_netflix_login(user_id, chat_id)
+            
             elif data == "cancel_netflix":
                 self.state_manager.clear_state(user_id)
-                self._show_welcome(user_id, call.message.chat.id)
+                self._show_welcome(user_id, chat_id)
+            
             elif data == "admin_login" and user_id == ADMIN_ID:
-                self._start_admin_login(user_id, call.message.chat.id)
+                self._start_admin_login(user_id, chat_id)
+            
             elif data == "back_to_admin" and user_id == ADMIN_ID:
                 self.state_manager.clear_state(user_id)
-                self._show_admin_dashboard(user_id, call.message.chat.id)
+                self._show_admin_dashboard(user_id, chat_id)
+            
+            elif data == "view_accounts" and user_id == ADMIN_ID:
+                self._show_accounts_page(user_id, chat_id, page=1)
+            
+            elif data.startswith("page_") and user_id == ADMIN_ID:
+                page = int(data.split("_")[1])
+                self._show_accounts_page(user_id, chat_id, page)
+            
+            elif data.startswith("viewacc_") and user_id == ADMIN_ID:
+                account_id = data.split("_")[1]
+                self._show_account_details(user_id, chat_id, account_id)
+            
+            elif data.startswith("getotp_") and user_id == ADMIN_ID:
+                account_id = data.split("_")[1]
+                self._get_account_otp(user_id, chat_id, account_id)
+            
+            elif data.startswith("remove_") and user_id == ADMIN_ID:
+                account_id = data.split("_")[1]
+                self._remove_account(user_id, chat_id, account_id)
+            
+            elif data == "otp_logs" and user_id == ADMIN_ID:
+                self._show_otp_logs(user_id, chat_id)
+            
             else:
                 self._send_safe_message(
-                    call.message.chat.id,
+                    chat_id,
                     "Please use /start"
                 )
                 
@@ -402,7 +489,216 @@ Account Manager:
             )
     
     # ========================
-    # PROCESSING FUNCTIONS
+    # NEW FEATURES: ACCOUNT MANAGEMENT
+    # ========================
+    
+    def _show_accounts_page(self, user_id: int, chat_id: int, page: int = 1):
+        """Show paginated accounts list"""
+        if user_id != ADMIN_ID:
+            self._show_welcome(user_id, chat_id)
+            return
+        
+        # Get paginated accounts
+        accounts, total_pages, total_accounts = self.db.get_accounts_page(page, 5)
+        
+        if not accounts:
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("➕ Add Account", callback_data="admin_login"))
+            markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+            
+            self._send_safe_message(
+                chat_id,
+                "📱 No Accounts Found\n\nAdd your first account to get started.",
+                markup=markup,
+                photo_url=NETFLIX_MAIN_IMAGE,
+                parse_mode="HTML"
+            )
+            return
+        
+        # Format accounts list
+        accounts_text = format_accounts_list(accounts, page, total_pages, total_accounts)
+        
+        # Create keyboard
+        markup = create_accounts_keyboard(accounts, page, total_pages)
+        
+        self._send_safe_message(
+            chat_id,
+            accounts_text,
+            markup=markup,
+            photo_url=NETFLIX_MAIN_IMAGE,
+            parse_mode="HTML"
+        )
+    
+    def _show_account_details(self, user_id: int, chat_id: int, account_id: str):
+        """Show account details"""
+        if user_id != ADMIN_ID:
+            return
+        
+        account = self.db.get_account(account_id)
+        if not account:
+            self._send_safe_message(
+                chat_id,
+                "❌ Account not found",
+                photo_url=NETFLIX_MAIN_IMAGE
+            )
+            self._show_accounts_page(user_id, chat_id, 1)
+            return
+        
+        # Format account details
+        details_text = format_account_details(account)
+        
+        # Create keyboard
+        markup = create_account_detail_keyboard(account_id)
+        
+        self._send_safe_message(
+            chat_id,
+            details_text,
+            markup=markup,
+            photo_url=NETFLIX_MAIN_IMAGE,
+            parse_mode="HTML"
+        )
+    
+    def _get_account_otp(self, user_id: int, chat_id: int, account_id: str):
+        """Get latest OTP for account"""
+        if user_id != ADMIN_ID:
+            return
+        
+        account = self.db.get_account(account_id)
+        if not account:
+            self.bot.answer_callback_query(
+                chat_id,
+                "Account not found",
+                show_alert=True
+            )
+            return
+        
+        # Show fetching message
+        self.bot.answer_callback_query(
+            chat_id,
+            "⏳ Fetching OTP...",
+            show_alert=False
+        )
+        
+        try:
+            # Fetch OTP
+            otp = self.account_manager.get_latest_otp(
+                account["session_string"],
+                account["phone"]
+            )
+            
+            if not otp:
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("🔄 Try Again", callback_data=f"getotp_{account_id}"))
+                markup.add(InlineKeyboardButton("📱 Account Details", callback_data=f"viewacc_{account_id}"))
+                
+                self._send_safe_message(
+                    chat_id,
+                    f"📱 No OTP Found\n\nPhone: {format_phone_display(account['phone'])}\n\nNo OTP found in recent messages.",
+                    markup=markup,
+                    photo_url=NETFLIX_MAIN_IMAGE,
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Log OTP
+            self.db.log_otp(account["phone"], otp, user_id)
+            
+            # Format OTP result
+            otp_text = format_otp_result(account["phone"], otp, account)
+            
+            # Create buttons
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔄 Fetch Again", callback_data=f"getotp_{account_id}"))
+            markup.add(InlineKeyboardButton("📱 Account Details", callback_data=f"viewacc_{account_id}"))
+            markup.add(InlineKeyboardButton("📋 All Accounts", callback_data="view_accounts"))
+            
+            self._send_safe_message(
+                chat_id,
+                otp_text,
+                markup=markup,
+                photo_url=NETFLIX_MAIN_IMAGE,
+                parse_mode="HTML"
+            )
+            
+        except Exception as e:
+            logger.error(f"Get OTP error: {e}")
+            self.bot.answer_callback_query(
+                chat_id,
+                f"Error: {str(e)[:50]}",
+                show_alert=True
+            )
+    
+    def _remove_account(self, user_id: int, chat_id: int, account_id: str):
+        """Remove account (logout)"""
+        if user_id != ADMIN_ID:
+            return
+        
+        # Confirm removal
+        account = self.db.get_account(account_id)
+        if not account:
+            self.bot.answer_callback_query(
+                chat_id,
+                "Account not found",
+                show_alert=True
+            )
+            return
+        
+        # Remove from database
+        removed = self.db.remove_account(account_id)
+        
+        if removed:
+            # Show success message
+            phone_display = format_phone_display(account["phone"])
+            
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("📋 All Accounts", callback_data="view_accounts"))
+            markup.add(InlineKeyboardButton("⬅️ Back to Admin", callback_data="back_to_admin"))
+            
+            self._send_safe_message(
+                chat_id,
+                f"✅ Account Removed Successfully\n\nPhone: {phone_display}\n\nAccount has been logged out and removed from database.",
+                markup=markup,
+                photo_url=NETFLIX_MAIN_IMAGE,
+                parse_mode="HTML"
+            )
+        else:
+            self.bot.answer_callback_query(
+                chat_id,
+                "Failed to remove account",
+                show_alert=True
+            )
+    
+    def _show_otp_logs(self, user_id: int, chat_id: int):
+        """Show OTP logs"""
+        if user_id != ADMIN_ID:
+            return
+        
+        # Get recent OTP logs
+        logs = self.db.get_recent_otps(20)
+        
+        if not logs:
+            logs_text = "<b>📊 OTP Logs</b>\n\nNo OTP logs found yet."
+        else:
+            logs_text = "<b>📊 Recent OTP Logs</b>\n\n"
+            for idx, log in enumerate(logs, 1):
+                phone = format_phone_display(log.get("phone", "N/A"))
+                otp = log.get("otp", "N/A")
+                time_str = log.get("fetched_at", datetime.utcnow()).strftime("%H:%M")
+                logs_text += f"{idx}. {phone}: <code>{otp}</code> ({time_str})\n"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+        
+        self._send_safe_message(
+            chat_id,
+            logs_text,
+            markup=markup,
+            photo_url=NETFLIX_MAIN_IMAGE,
+            parse_mode="HTML"
+        )
+    
+    # ========================
+    # EXISTING FLOW FUNCTIONS (same as before)
     # ========================
     
     def _start_netflix_login(self, user_id: int, chat_id: int):
@@ -771,23 +1067,37 @@ Get Your Premium Netflix Account Now 👇
         )
     
     def _show_admin_dashboard(self, user_id: int, chat_id: int):
-        """Show admin dashboard"""
+        """Show admin dashboard with View Accounts button"""
         if user_id != ADMIN_ID:
             self._show_welcome(user_id, chat_id)
             return
         
-        text = """
+        # Get quick stats
+        total_accounts = self.db.get_total_accounts()
+        
+        text = f"""
 👑 Netflix Admin Panel
 
-📊 Management Tools:
-• Add accounts for OTP fetching
-• View OTP logs and statistics
-• Manage existing accounts
+📊 Quick Stats:
+• Total Accounts: {total_accounts}
+
+🛠️ Management Tools:
+• View all accounts (with pagination)
+• Get latest OTP from any account
+• Remove accounts (logout)
+• Add new accounts
+• View OTP logs
 """
         
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔐 Add Account", callback_data="admin_login"))
-        markup.add(InlineKeyboardButton("📊 Statistics", callback_data="stats"))
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📱 View Accounts", callback_data="view_accounts"),
+            InlineKeyboardButton("🔐 Add Account", callback_data="admin_login")
+        )
+        markup.add(
+            InlineKeyboardButton("📊 OTP Logs", callback_data="otp_logs"),
+            InlineKeyboardButton("📈 Statistics", callback_data="stats")
+        )
         
         self._send_safe_message(
             chat_id,
