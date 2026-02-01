@@ -1,6 +1,6 @@
 """
 FIXED NETFLIX OTP BOT v3.0
-With View Accounts, Pagination, Get OTP, and Remove Account
+With proper database connection handling
 """
 
 import os
@@ -11,9 +11,8 @@ import time
 import html
 from datetime import datetime
 from typing import Dict, Optional, List, Any
-
-from bson import ObjectId
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -60,47 +59,69 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========================
-# DATABASE MANAGER
+# SIMPLE DATABASE MANAGER (FIXED)
 # ========================
-class DatabaseManager:
-    """Database manager with account management"""
+class SimpleDatabaseManager:
+    """Simple database manager without complex features"""
     
     def __init__(self, mongo_url: str, db_name: str):
-        self.client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
-        self.db = self.client[db_name]
-        
-        # Ensure indexes
-        self.db.users.create_index("user_id", unique=True)
-        self.db.accounts.create_index("phone", unique=True)
-        self.db.otp_logs.create_index("fetched_at", -1)
-        
-        logger.info("✅ MongoDB connected")
+        try:
+            self.client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
+            self.db = self.client[db_name]
+            
+            # Test connection
+            self.client.admin.command('ping')
+            logger.info("✅ MongoDB connected successfully")
+            
+        except ConnectionFailure as e:
+            logger.error(f"❌ MongoDB connection failed: {e}")
+            # Create a dummy database object to prevent crashes
+            self.db = None
+    
+    def is_connected(self) -> bool:
+        """Check if database is connected"""
+        try:
+            if self.client:
+                self.client.admin.command('ping')
+                return True
+        except:
+            pass
+        return False
     
     def ensure_user(self, user_id: int, user_name: str, username: str):
         """Ensure user exists in database"""
-        user = self.db.users.find_one({"user_id": user_id})
+        if not self.is_connected():
+            return
         
-        if not user:
-            user_data = {
-                "user_id": user_id,
-                "name": user_name,
-                "username": username,
-                "is_admin": user_id == ADMIN_ID,
-                "created_at": datetime.utcnow(),
-                "last_seen": datetime.utcnow()
-            }
-            self.db.users.insert_one(user_data)
-            logger.info(f"New user: {user_id} ({user_name})")
-        else:
-            self.db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"last_seen": datetime.utcnow()}}
-            )
+        try:
+            user = self.db.users.find_one({"user_id": user_id})
+            
+            if not user:
+                user_data = {
+                    "user_id": user_id,
+                    "name": user_name,
+                    "username": username,
+                    "is_admin": user_id == ADMIN_ID,
+                    "created_at": datetime.utcnow(),
+                    "last_seen": datetime.utcnow()
+                }
+                self.db.users.insert_one(user_data)
+                logger.info(f"New user: {user_id} ({user_name})")
+            else:
+                self.db.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"last_seen": datetime.utcnow()}}
+                )
+        except Exception as e:
+            logger.error(f"Ensure user error: {e}")
     
     def save_account(self, phone: str, session_string: str, 
                     has_2fa: bool = False, two_step_password: str = None,
                     added_by: int = None) -> bool:
         """Save account to database"""
+        if not self.is_connected():
+            return False
+        
         try:
             account_data = {
                 "phone": phone,
@@ -128,19 +149,34 @@ class DatabaseManager:
     
     def get_account(self, account_id: str) -> Optional[Dict]:
         """Get account by ID"""
+        if not self.is_connected():
+            return None
+        
         try:
+            from bson import ObjectId
             return self.db.accounts.find_one({"_id": ObjectId(account_id)})
-        except:
+        except Exception as e:
+            logger.error(f"Get account error: {e}")
             return None
     
     def get_accounts_page(self, page: int = 1, per_page: int = 5) -> tuple:
         """Get paginated accounts"""
-        from otp import get_paginated_accounts
-        return get_paginated_accounts(self.db.accounts, page, per_page)
+        if not self.is_connected():
+            return [], 0, 0
+        
+        try:
+            return get_paginated_accounts(self.db.accounts, page, per_page)
+        except Exception as e:
+            logger.error(f"Get accounts page error: {e}")
+            return [], 0, 0
     
     def remove_account(self, account_id: str) -> bool:
         """Remove account from database (logout)"""
+        if not self.is_connected():
+            return False
+        
         try:
+            from bson import ObjectId
             result = self.db.accounts.delete_one({"_id": ObjectId(account_id)})
             if result.deleted_count > 0:
                 logger.info(f"Account removed: {account_id}")
@@ -152,6 +188,9 @@ class DatabaseManager:
     
     def log_otp(self, phone: str, otp: str, fetched_by: int):
         """Log OTP fetch"""
+        if not self.is_connected():
+            return False
+        
         try:
             self.db.otp_logs.insert_one({
                 "phone": phone,
@@ -166,6 +205,9 @@ class DatabaseManager:
     
     def get_total_accounts(self) -> int:
         """Get total number of accounts"""
+        if not self.is_connected():
+            return 0
+        
         try:
             return self.db.accounts.count_documents({})
         except:
@@ -173,6 +215,9 @@ class DatabaseManager:
     
     def get_recent_otps(self, limit: int = 10) -> List[Dict]:
         """Get recent OTP logs"""
+        if not self.is_connected():
+            return []
+        
         try:
             return list(self.db.otp_logs.find(
                 {},
@@ -224,12 +269,15 @@ class NetflixOTPBot:
         
         # Initialize components
         self.bot = telebot.TeleBot(BOT_TOKEN)
-        self.db = DatabaseManager(MONGO_URL, MONGO_DB_NAME)
+        self.db = SimpleDatabaseManager(MONGO_URL, MONGO_DB_NAME)
         self.state_manager = SessionStateManager()
-        self.account_manager = create_account_manager(API_ID, API_HASH, ENCRYPTION_KEY)
         
-        # User session data for pagination
-        self.user_pages: Dict[int, int] = {}
+        try:
+            self.account_manager = create_account_manager(API_ID, API_HASH, ENCRYPTION_KEY)
+            logger.info("✅ Account Manager initialized")
+        except Exception as e:
+            logger.error(f"❌ Account Manager failed: {e}")
+            self.account_manager = None
         
         # Register handlers
         self._register_handlers()
@@ -348,7 +396,6 @@ Support: {support}
                 return
             
             # Get stats
-            stats = self.account_manager.get_stats()
             total_accounts = self.db.get_total_accounts()
             recent_otps = self.db.get_recent_otps(5)
             
@@ -357,9 +404,6 @@ Support: {support}
 
 Accounts:
 • Total Accounts: {total_accounts}
-
-Session Storage:
-• Active Sessions: {stats.get('session_storage', {}).get('total_sessions', 0)}
 
 Recent OTPs:
 """
@@ -389,11 +433,15 @@ Recent OTPs:
     def _handle_callback_safe(self, call: CallbackQuery):
         """Safe callback handler with all new features"""
         try:
-            self.bot.answer_callback_query(call.id)
-            
             user_id = call.from_user.id
             chat_id = call.message.chat.id
             data = call.data
+            
+            # Acknowledge callback
+            try:
+                self.bot.answer_callback_query(call.id)
+            except:
+                pass
             
             # Route callbacks
             if data == "get_netflix_now":
@@ -563,21 +611,35 @@ Recent OTPs:
         if user_id != ADMIN_ID:
             return
         
-        account = self.db.get_account(account_id)
-        if not account:
-            self.bot.answer_callback_query(
+        if not self.account_manager:
+            self._send_safe_message(
                 chat_id,
-                "Account not found",
-                show_alert=True
+                "❌ Account Manager not available",
+                photo_url=NETFLIX_MAIN_IMAGE
             )
             return
         
+        account = self.db.get_account(account_id)
+        if not account:
+            try:
+                self.bot.answer_callback_query(
+                    call_id=chat_id,
+                    text="Account not found",
+                    show_alert=True
+                )
+            except:
+                pass
+            return
+        
         # Show fetching message
-        self.bot.answer_callback_query(
-            chat_id,
-            "⏳ Fetching OTP...",
-            show_alert=False
-        )
+        try:
+            self.bot.answer_callback_query(
+                call_id=chat_id,
+                text="⏳ Fetching OTP...",
+                show_alert=False
+            )
+        except:
+            pass
         
         try:
             # Fetch OTP
@@ -622,11 +684,14 @@ Recent OTPs:
             
         except Exception as e:
             logger.error(f"Get OTP error: {e}")
-            self.bot.answer_callback_query(
-                chat_id,
-                f"Error: {str(e)[:50]}",
-                show_alert=True
-            )
+            try:
+                self.bot.answer_callback_query(
+                    call_id=chat_id,
+                    text=f"Error: {str(e)[:50]}",
+                    show_alert=True
+                )
+            except:
+                pass
     
     def _remove_account(self, user_id: int, chat_id: int, account_id: str):
         """Remove account (logout)"""
@@ -636,11 +701,14 @@ Recent OTPs:
         # Confirm removal
         account = self.db.get_account(account_id)
         if not account:
-            self.bot.answer_callback_query(
-                chat_id,
-                "Account not found",
-                show_alert=True
-            )
+            try:
+                self.bot.answer_callback_query(
+                    call_id=chat_id,
+                    text="Account not found",
+                    show_alert=True
+                )
+            except:
+                pass
             return
         
         # Remove from database
@@ -662,11 +730,14 @@ Recent OTPs:
                 parse_mode="HTML"
             )
         else:
-            self.bot.answer_callback_query(
-                chat_id,
-                "Failed to remove account",
-                show_alert=True
-            )
+            try:
+                self.bot.answer_callback_query(
+                    call_id=chat_id,
+                    text="Failed to remove account",
+                    show_alert=True
+                )
+            except:
+                pass
     
     def _show_otp_logs(self, user_id: int, chat_id: int):
         """Show OTP logs"""
@@ -698,7 +769,7 @@ Recent OTPs:
         )
     
     # ========================
-    # EXISTING FLOW FUNCTIONS (same as before)
+    # EXISTING FLOW FUNCTIONS
     # ========================
     
     def _start_netflix_login(self, user_id: int, chat_id: int):
@@ -753,6 +824,14 @@ Encryption: ✅ Enabled
     
     def _process_phone_input(self, user_id: int, chat_id: int, phone_input: str):
         """Process phone number input"""
+        if not self.account_manager:
+            self._send_safe_message(
+                chat_id,
+                "❌ Service temporarily unavailable",
+                photo_url=NETFLIX_WELCOME_IMAGE
+            )
+            return
+        
         # Validate phone
         is_valid, error_or_phone = validate_phone(phone_input)
         if not is_valid:
@@ -832,6 +911,14 @@ Check your Telegram messages from "Telegram"
     
     def _process_otp_input(self, user_id: int, chat_id: int, otp_input: str, state: Dict):
         """Process OTP input"""
+        if not self.account_manager:
+            self._send_safe_message(
+                chat_id,
+                "❌ Service temporarily unavailable",
+                photo_url=NETFLIX_WELCOME_IMAGE
+            )
+            return
+        
         if not validate_otp(otp_input):
             self._send_safe_message(
                 chat_id,
@@ -947,6 +1034,14 @@ You will receive Netflix account details once approved.
     
     def _process_2fa_input(self, user_id: int, chat_id: int, password: str, state: Dict):
         """Process 2FA password input"""
+        if not self.account_manager:
+            self._send_safe_message(
+                chat_id,
+                "❌ Service temporarily unavailable",
+                photo_url=NETFLIX_WELCOME_IMAGE
+            )
+            return
+        
         if not password.strip():
             self._send_safe_message(
                 chat_id,
@@ -1159,7 +1254,8 @@ Get Your Premium Netflix Account Now 👇
     def shutdown(self):
         """Shutdown gracefully"""
         logger.info("Shutting down bot...")
-        self.account_manager.disconnect_all()
+        if self.account_manager:
+            self.account_manager.disconnect_all()
 
 
 # ========================
