@@ -8,7 +8,6 @@ import html
 import math
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
-from bson import ObjectId
 
 def safe_error_message(error: Exception) -> str:
     """Convert exception to safe user-friendly message"""
@@ -59,16 +58,38 @@ def validate_otp(otp: str) -> bool:
     return otp.isdigit() and len(otp) in [5, 6]
 
 def extract_otp_from_text(text: str) -> Optional[str]:
-    """Extract OTP from text message"""
+    """Extract OTP from text message with better detection"""
     if not text:
         return None
     
-    # Look for 5-digit OTP
+    text_lower = text.lower()
+    
+    # Common OTP patterns in Telegram
+    patterns = [
+        r'(\d{5})\s+is your Telegram code',
+        r'Telegram code:?\s*(\d{5})',
+        r'code:?\s*(\d{5})',
+        r'verification code:?\s*(\d{5})',
+        r'login code:?\s*(\d{5})',
+        r'OTP:?\s*(\d{5})',
+        r'\b(\d{5})\b.*telegram',
+        r'\b(\d{5})\b.*code',
+        r'\b(\d{5})\b.*verify',
+    ]
+    
+    # Try patterns first
+    for pattern in patterns:
+        matches = re.findall(pattern, text_lower, re.IGNORECASE)
+        if matches:
+            return matches[0]
+    
+    # Fallback: look for 5-digit standalone numbers
     matches = re.findall(r'\b\d{5}\b', text)
     if matches:
+        # Return the first one
         return matches[0]
     
-    # Look for 6-digit OTP
+    # Look for 6-digit codes
     matches = re.findall(r'\b\d{6}\b', text)
     if matches:
         return matches[0]
@@ -81,66 +102,6 @@ def format_phone_display(phone: str) -> str:
         return phone
     
     return f"{phone[:4]}****{phone[-4:]}"
-
-def create_safe_response(success: bool, message: str, 
-                        data: Optional[Dict] = None,
-                        error_code: Optional[str] = None) -> Dict[str, Any]:
-    """Create safe response dictionary"""
-    response = {
-        "success": success,
-        "message": html.escape(message) if message else "",
-        "data": data or {}
-    }
-    
-    if error_code:
-        response["error_code"] = error_code
-    
-    return response
-
-def handle_pyrogram_error(error: Exception) -> Dict[str, Any]:
-    """Handle Pyrogram errors safely"""
-    error_name = type(error).__name__
-    
-    # Common error mappings
-    if error_name == "PhoneNumberInvalid":
-        return create_safe_response(
-            False,
-            "Invalid phone number format. Please use +CountryCodeNumber",
-            error_code="INVALID_PHONE"
-        )
-    elif error_name == "PhoneCodeInvalid":
-        return create_safe_response(
-            False,
-            "Invalid verification code. Please check and try again",
-            error_code="INVALID_CODE"
-        )
-    elif error_name == "PhoneCodeExpired":
-        return create_safe_response(
-            False,
-            "Verification code expired. Please request new code",
-            error_code="CODE_EXPIRED"
-        )
-    elif error_name == "SessionPasswordNeeded":
-        return create_safe_response(
-            False,
-            "This account has 2-step verification. Please enter your password",
-            error_code="NEEDS_2FA"
-        )
-    elif error_name == "FloodWait":
-        wait_time = getattr(error, 'value', 60)
-        return create_safe_response(
-            False,
-            f"Too many attempts. Please wait {wait_time} seconds",
-            error_code="FLOOD_WAIT",
-            data={"wait_time": wait_time}
-        )
-    else:
-        safe_msg = html.escape(str(error)[:100])
-        return create_safe_response(
-            False,
-            f"Error: {safe_msg}",
-            error_code="UNKNOWN_ERROR"
-        )
 
 def escape_html(text: str) -> str:
     """Escape HTML special characters"""
@@ -211,7 +172,7 @@ def format_accounts_list(accounts: List[Dict], page: int, total_pages: int, tota
     
     return text
 
-def create_accounts_keyboard(accounts: List[Dict], page: int, total_pages: int) -> Any:
+def create_accounts_keyboard(accounts: List[Dict], page: int, total_pages: int):
     """Create keyboard for accounts list"""
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     
@@ -262,7 +223,7 @@ def create_accounts_keyboard(accounts: List[Dict], page: int, total_pages: int) 
     
     return markup
 
-def create_account_detail_keyboard(account_id: str) -> Any:
+def create_account_detail_keyboard(account_id: str):
     """Create keyboard for account details"""
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     
@@ -332,5 +293,25 @@ def format_otp_result(phone: str, otp: str, account: Dict = None) -> str:
         text += f"<b>2FA Password:</b> <code>{password}</code>\n"
     
     text += f"\n<i>OTP will expire in 5 minutes</i>"
+    
+    return text
+
+def format_no_otp_found(phone: str) -> str:
+    """Format message when no OTP found"""
+    phone_display = format_phone_display(phone)
+    
+    text = f"""
+<b>❌ No OTP Found</b>
+
+<b>Phone:</b> <code>{phone_display}</code>
+
+No OTP found in recent messages.
+Please make sure:
+1. Telegram is sending OTPs to this account
+2. Check your Saved Messages
+3. Check messages from "Telegram" (777000)
+
+<i>Try again in 30 seconds</i>
+"""
     
     return text
