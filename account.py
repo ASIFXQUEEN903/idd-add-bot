@@ -305,6 +305,10 @@ class EncryptionManager:
             return self.cipher.decrypt(encrypted_data.encode()).decode()
         except Exception:
             return encrypted_data
+    
+    def get_key(self) -> str:
+        """Get encryption key"""
+        return self.key.decode()
 
 # ========================
 # DEVICE MANAGER
@@ -456,7 +460,7 @@ class ProfessionalAccountManager:
             }
             
         except Exception as e:
-            logger.error(f"Send OTP error: {e}")
+            logger.error(f"Send OTP error: {e}", exc_info=True)
             
             if client:
                 try:
@@ -561,7 +565,7 @@ class ProfessionalAccountManager:
                 }
                 
         except Exception as e:
-            logger.error(f"Verify OTP error: {e}")
+            logger.error(f"Verify OTP error: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": "Verification failed",
@@ -623,7 +627,7 @@ class ProfessionalAccountManager:
                 }
                 
         except Exception as e:
-            logger.error(f"2FA verification error: {e}")
+            logger.error(f"2FA verification error: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": "2FA verification failed",
@@ -672,7 +676,7 @@ class ProfessionalAccountManager:
             return None
             
         except Exception as e:
-            logger.error(f"Get OTP error: {e}")
+            logger.error(f"Get OTP error: {e}", exc_info=True)
             if client:
                 try:
                     await client.disconnect()
