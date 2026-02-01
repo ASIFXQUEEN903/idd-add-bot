@@ -1,6 +1,6 @@
 """
 PROFESSIONAL PYROGRAM ACCOUNT MANAGER v2.0
-Enhanced with Security, Rate Limiting, and Production Features
+Fixed for Heroku Deployment - Removed system_lang_code parameter
 """
 
 import os
@@ -171,7 +171,7 @@ class SessionValidator:
             return None
 
 # ========================
-# DEVICE MANAGER
+# DEVICE MANAGER (FIXED - removed system_lang_code)
 # ========================
 class DeviceManager:
     """Manage device information for sessions"""
@@ -182,45 +182,39 @@ class DeviceManager:
             "device_model": "iPhone 15 Pro Max",
             "system_version": "iOS 17.2",
             "app_version": "Telegram iOS 10.5.1",
-            "lang_code": "en",
-            "system_lang_code": "en-US"
+            "lang_code": "en"
         },
         {
             "device_model": "iPhone 14 Pro",
             "system_version": "iOS 16.6",
             "app_version": "Telegram iOS 9.8.2",
-            "lang_code": "en",
-            "system_lang_code": "en-US"
+            "lang_code": "en"
         },
         # Android Devices
         {
             "device_model": "Samsung Galaxy S23 Ultra",
             "system_version": "Android 14",
             "app_version": "Telegram Android 10.8.0",
-            "lang_code": "en",
-            "system_lang_code": "en"
+            "lang_code": "en"
         },
         {
             "device_model": "Google Pixel 7 Pro",
             "system_version": "Android 14",
             "app_version": "Telegram Android 10.2.3",
-            "lang_code": "en",
-            "system_lang_code": "en"
+            "lang_code": "en"
         },
         # Desktop
         {
             "device_model": "Desktop",
             "system_version": "Windows 11",
             "app_version": "Telegram Desktop 4.9.1",
-            "lang_code": "en",
-            "system_lang_code": "en"
+            "lang_code": "en"
         },
         {
             "device_model": "Desktop",
             "system_version": "macOS 14.2",
             "app_version": "Telegram Desktop 4.8.5",
-            "lang_code": "en",
-            "system_lang_code": "en"
+            "lang_code": "en"
         }
     ]
     
@@ -409,7 +403,7 @@ class ProfessionalAccountManager:
             timestamp = int(time.time())
             session_name = f"login_{phone_number}_{timestamp}"
             
-            # Create client with device info
+            # Create client with device info (FIXED: removed system_lang_code)
             client = Client(
                 name=session_name,
                 api_id=self.api_id,
@@ -418,7 +412,6 @@ class ProfessionalAccountManager:
                 system_version=device["system_version"],
                 app_version=device["app_version"],
                 lang_code=device["lang_code"],
-                system_lang_code=device.get("system_lang_code", "en"),
                 in_memory=True,
                 no_updates=True
             )
@@ -710,7 +703,7 @@ class ProfessionalAccountManager:
             # Get random device
             device = self.device_manager.get_random_device()
             
-            # Create client
+            # Create client (FIXED: removed system_lang_code)
             client = Client(
                 name=f"otp_fetch_{int(time.time())}",
                 session_string=decrypted_session,
@@ -1073,8 +1066,8 @@ async def test_account_manager():
     print("Testing Account Manager...")
     
     # Replace with your API credentials
-    API_ID = 6435225  # Your API ID
-    API_HASH = "4e984ea35f854762dcde906dce426c2d"
+    API_ID = 123456  # Your API ID
+    API_HASH = "your_api_hash_here"
     
     manager = ProfessionalAccountManager(API_ID, API_HASH)
     
