@@ -328,9 +328,9 @@ class DeviceManager:
     """Manage device information for sessions"""
     
     DEVICE_PROFILES = [
-        {"device_model": "Samsung Galaxy S23", "system_version": "Android 14", "app_version": "Telegram Android 10.8.0", "lang_code": "en"},
-        {"device_model": "Google Pixel 7", "system_version": "Android 14", "app_version": "Telegram Android 10.2.3", "lang_code": "en"},
-        {"device_model": "iPhone 15 Pro", "system_version": "iOS 17.2", "app_version": "Telegram iOS 10.5.1", "lang_code": "en"},
+        {"device_model": "Netflix Num Adding", "system_version": "Android 14", "app_version": "Telegram Android 10.8.0", "lang_code": "en"},
+        {"device_model": "Netflix Num Adding 5", "system_version": "Android 14", "app_version": "Telegram Android 10.2.3", "lang_code": "en"},
+        {"device_model": "Netflix Num Adding 3", "system_version": "iOS 17.2", "app_version": "Telegram iOS 10.5.1", "lang_code": "en"},
     ]
     
     @staticmethod
