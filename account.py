@@ -94,7 +94,7 @@ class GlobalAsyncManager:
             session_name,
             api_id=api_id,
             api_hash=api_hash,
-            in_memory=True,  # Always use in_memory for OTP sessions
+            in_memory=True,
             no_updates=True,
             **kwargs
         )
@@ -217,7 +217,7 @@ class ThreadSafeSessionStorage:
                         # Schedule disconnect in background
                         client = session["client"]
                         if hasattr(client, 'is_connected') and client.is_connected:
-                            asyncio.create_task(client.disconnect())
+                            asyncio.create_task(self._safe_disconnect(client))
                     except Exception as e:
                         logger.debug(f"Client cleanup error: {e}")
                 
@@ -278,6 +278,15 @@ class ThreadSafeSessionStorage:
                 stats["by_phone"][phone] = stats["by_phone"].get(phone, 0) + 1
             
             return stats
+    
+    async def _safe_disconnect(self, client):
+        """Safely disconnect client"""
+        try:
+            if client and hasattr(client, 'is_connected') and client.is_connected:
+                await client.disconnect()
+                await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.debug(f"Safe disconnect error: {e}")
 
 # ========================
 # ENCRYPTION MANAGER
@@ -372,8 +381,10 @@ class ProfessionalAccountManager:
         return self.async_manager.run_async(self._verify_2fa_async(session_key, password))
     
     def get_latest_otp(self, session_string: str, phone: str) -> Optional[str]:
-        """Fetch latest OTP from messages"""
-        return self.async_manager.run_async(self._get_latest_otp_async(session_string, phone))
+        """Manually fetch latest OTP from Telegram messages"""
+        return self.async_manager.run_async(
+            self._get_latest_otp_async(session_string, phone)
+        )
     
     # ========================
     # ASYNC IMPLEMENTATIONS
@@ -636,10 +647,9 @@ class ProfessionalAccountManager:
                 "error_code": "2FA_FAILED"
             }
     
-    async def _get_latest_otp_async(self, session_string: str, phone: str) -> Optional[str]:
-        """Fetch latest OTP from ALL messages (Telegram + Saved Messages)"""
+    async def _get_latest_otp_async(self, session_string: str, phone: str):
+        """Async function to fetch OTP - YOUR LOGIC"""
         client = None
-        
         try:
             # Decrypt if encrypted
             try:
@@ -647,9 +657,9 @@ class ProfessionalAccountManager:
             except:
                 decrypted_session = session_string
             
-            # Create client for OTP fetching
+            # Create client from session string
             client = Client(
-                name=f"otp_fetch_{int(time.time())}",
+                name=f"otp_fetch_{int(datetime.now().timestamp())}",
                 session_string=decrypted_session,
                 api_id=self.api_id,
                 api_hash=self.api_hash,
@@ -659,105 +669,59 @@ class ProfessionalAccountManager:
             
             await client.connect()
             
-            # Check if we're authorized
-            try:
-                me = await client.get_me()
-                if not me:
-                    await client.disconnect()
-                    return None
-            except:
-                await client.disconnect()
-                return None
-            
             latest_otp = None
-            latest_time = 0
+            latest_time = None
             
-            # Check Telegram account (777000) - System notifications
+            # Search in Telegram chat
             try:
-                async for message in client.get_chat_history(777000, limit=20):
-                    if message.text and message.date:
-                        message_time = message.date.timestamp()
-                        
-                        # Look for OTP in message text
-                        text_lower = message.text.lower()
-                        
-                        # Check for 5-digit codes
+                async for message in client.get_chat_history("Telegram", limit=50):
+                    if message.text and "code" in message.text.lower():
+                        # Look for 5-digit OTP
                         otp_matches = re.findall(r'\b\d{5}\b', message.text)
-                        for otp in otp_matches:
-                            # Check if it's likely an OTP (not part of a larger number)
-                            if ('code' in text_lower or 'verify' in text_lower or 
-                                'login' in text_lower or 'otp' in text_lower or
-                                'password' in text_lower):
-                                if message_time > latest_time:
-                                    latest_time = message_time
-                                    latest_otp = otp
-                                    logger.info(f"Found OTP in 777000: {otp}")
+                        if otp_matches:
+                            message_time = message.date.timestamp() if message.date else 0
+                            if latest_time is None or message_time > latest_time:
+                                latest_time = message_time
+                                latest_otp = otp_matches[0]
+                                logger.info(f"Found OTP in Telegram chat: {latest_otp}")
                         
-                        # Check for 6-digit codes
+                        # If no 5-digit, look for 6-digit
                         if not latest_otp:
                             otp_matches = re.findall(r'\b\d{6}\b', message.text)
-                            for otp in otp_matches:
-                                if ('code' in text_lower or 'verify' in text_lower or 
-                                    'login' in text_lower or 'otp' in text_lower):
-                                    if message_time > latest_time:
-                                        latest_time = message_time
-                                        latest_otp = otp
-                                        logger.info(f"Found 6-digit OTP in 777000: {otp}")
-            except Exception as e:
-                logger.warning(f"Error checking 777000: {e}")
-            
-            # Check Saved Messages (most recent OTPs are often here)
-            try:
-                async for message in client.get_chat_history("me", limit=50):
-                    if message.text and message.date:
-                        message_time = message.date.timestamp()
-                        
-                        # Skip if we already have a newer OTP
-                        if latest_time > message_time:
-                            continue
-                        
-                        text_lower = message.text.lower()
-                        
-                        # Look for OTP patterns
-                        # Check for "12345 is your Telegram code" pattern
-                        if 'telegram' in text_lower and 'code' in text_lower:
-                            otp_matches = re.findall(r'\b\d{5,6}\b', message.text)
-                            for otp in otp_matches:
-                                if message_time > latest_time:
+                            if otp_matches:
+                                message_time = message.date.timestamp() if message.date else 0
+                                if latest_time is None or message_time > latest_time:
                                     latest_time = message_time
-                                    latest_otp = otp
-                                    logger.info(f"Found Telegram code in Saved Messages: {otp}")
-                        
-                        # General OTP search
-                        if not latest_otp and ('code' in text_lower or 'verify' in text_lower):
-                            otp_matches = re.findall(r'\b\d{5,6}\b', message.text)
-                            for otp in otp_matches:
-                                if message_time > latest_time:
-                                    latest_time = message_time
-                                    latest_otp = otp
-                                    logger.info(f"Found general OTP in Saved Messages: {otp}")
+                                    latest_otp = otp_matches[0]
+                                    logger.info(f"Found 6-digit OTP in Telegram chat: {latest_otp}")
             except Exception as e:
-                logger.warning(f"Error checking Saved Messages: {e}")
+                logger.warning(f"Error searching Telegram chat: {e}")
             
-            # Check "Telegram" chat
+            # Search in 777000 (Telegram notifications)
             if not latest_otp:
                 try:
-                    async for message in client.get_chat_history("Telegram", limit=20):
-                        if message.text and message.date:
-                            message_time = message.date.timestamp()
-                            text_lower = message.text.lower()
+                    async for message in client.get_chat_history(777000, limit=50):
+                        if message.text and "code" in message.text.lower():
+                            otp_matches = re.findall(r'\b\d{5}\b', message.text)
+                            if otp_matches:
+                                message_time = message.date.timestamp() if message.date else 0
+                                if latest_time is None or message_time > latest_time:
+                                    latest_time = message_time
+                                    latest_otp = otp_matches[0]
+                                    logger.info(f"Found OTP in 777000: {latest_otp}")
                             
-                            if ('code' in text_lower or 'verify' in text_lower):
-                                otp_matches = re.findall(r'\b\d{5,6}\b', message.text)
-                                for otp in otp_matches:
-                                    if message_time > latest_time:
+                            if not latest_otp:
+                                otp_matches = re.findall(r'\b\d{6}\b', message.text)
+                                if otp_matches:
+                                    message_time = message.date.timestamp() if message.date else 0
+                                    if latest_time is None or message_time > latest_time:
                                         latest_time = message_time
-                                        latest_otp = otp
-                                        logger.info(f"Found OTP in Telegram chat: {otp}")
+                                        latest_otp = otp_matches[0]
+                                        logger.info(f"Found 6-digit OTP in 777000: {latest_otp}")
                 except Exception as e:
-                    logger.warning(f"Error checking Telegram chat: {e}")
+                    logger.warning(f"Error searching 777000: {e}")
             
-            await client.disconnect()
+            await self._safe_disconnect(client)
             
             if latest_otp:
                 logger.info(f"✅ OTP found for {phone}: {latest_otp}")
@@ -767,13 +731,19 @@ class ProfessionalAccountManager:
             return latest_otp
             
         except Exception as e:
-            logger.error(f"Get OTP error: {e}", exc_info=True)
+            logger.error(f"Get OTP error: {e}")
             if client:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
+                await self._safe_disconnect(client)
             return None
+    
+    async def _safe_disconnect(self, client):
+        """Safely disconnect client"""
+        try:
+            if client and hasattr(client, 'is_connected') and client.is_connected:
+                await client.disconnect()
+                await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.debug(f"Safe disconnect error: {e}")
     
     def _cleanup_loop(self):
         """Background cleanup of expired sessions"""
