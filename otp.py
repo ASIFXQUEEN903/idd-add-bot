@@ -58,38 +58,16 @@ def validate_otp(otp: str) -> bool:
     return otp.isdigit() and len(otp) in [5, 6]
 
 def extract_otp_from_text(text: str) -> Optional[str]:
-    """Extract OTP from text message with better detection"""
+    """Extract OTP from text message"""
     if not text:
         return None
     
-    text_lower = text.lower()
-    
-    # Common OTP patterns in Telegram
-    patterns = [
-        r'(\d{5})\s+is your Telegram code',
-        r'Telegram code:?\s*(\d{5})',
-        r'code:?\s*(\d{5})',
-        r'verification code:?\s*(\d{5})',
-        r'login code:?\s*(\d{5})',
-        r'OTP:?\s*(\d{5})',
-        r'\b(\d{5})\b.*telegram',
-        r'\b(\d{5})\b.*code',
-        r'\b(\d{5})\b.*verify',
-    ]
-    
-    # Try patterns first
-    for pattern in patterns:
-        matches = re.findall(pattern, text_lower, re.IGNORECASE)
-        if matches:
-            return matches[0]
-    
-    # Fallback: look for 5-digit standalone numbers
+    # Look for 5-digit OTP
     matches = re.findall(r'\b\d{5}\b', text)
     if matches:
-        # Return the first one
         return matches[0]
     
-    # Look for 6-digit codes
+    # Look for 6-digit OTP
     matches = re.findall(r'\b\d{6}\b', text)
     if matches:
         return matches[0]
@@ -305,11 +283,11 @@ def format_no_otp_found(phone: str) -> str:
 
 <b>Phone:</b> <code>{phone_display}</code>
 
-No OTP found in recent messages.
+No OTP found in recent Telegram messages.
 Please make sure:
 1. Telegram is sending OTPs to this account
-2. Check your Saved Messages
-3. Check messages from "Telegram" (777000)
+2. Check Telegram chat for OTP messages
+3. Try again after receiving a new OTP
 
 <i>Try again in 30 seconds</i>
 """
