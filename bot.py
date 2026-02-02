@@ -1,6 +1,6 @@
 """
 FIXED NETFLIX OTP BOT v4.0
-With improved OTP fetching from ALL messages
+With clear phone number display in accounts list
 """
 
 import os
@@ -541,68 +541,68 @@ Recent OTPs:
     # NEW FEATURES: ACCOUNT MANAGEMENT
     # ========================
     
-def _show_accounts_page(self, user_id: int, chat_id: int, page: int = 1):
-    """Show paginated accounts list"""
-    if user_id != ADMIN_ID:
-        self._show_welcome(user_id, chat_id)
-        return
-    
-    # Get paginated accounts
-    accounts, total_pages, total_accounts = self.db.get_accounts_page(page, 5)
-    
-    if not accounts:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("➕ Add Account", callback_data="admin_login"))
-        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+    def _show_accounts_page(self, user_id: int, chat_id: int, page: int = 1):
+        """Show paginated accounts list with clear phone numbers"""
+        if user_id != ADMIN_ID:
+            self._show_welcome(user_id, chat_id)
+            return
+        
+        # Get paginated accounts
+        accounts, total_pages, total_accounts = self.db.get_accounts_page(page, 5)
+        
+        if not accounts:
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("➕ Add Account", callback_data="admin_login"))
+            markup.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+            
+            self._send_safe_message(
+                chat_id,
+                "📱 No Accounts Found\n\nAdd your first account to get started.",
+                markup=markup,
+                photo_url=NETFLIX_MAIN_IMAGE,
+                parse_mode="HTML"
+            )
+            return
+        
+        # Format accounts list - CLEAR PHONE NUMBERS
+        text = f"<b>📱 All Accounts (Page {page}/{total_pages})</b>\n\n"
+        
+        start_num = (page - 1) * 5 + 1
+        for idx, account in enumerate(accounts, start=start_num):
+            phone = account.get("phone", "N/A")
+            
+            # Clear phone number display
+            if phone.startswith('+91') and len(phone) == 13:
+                # Indian number: +91 XXX XXX XXXX format
+                cleaned = phone[1:]  # Remove +
+                phone_display = f"+{cleaned[:2]} {cleaned[2:5]} {cleaned[5:8]} {cleaned[8:]}"
+            else:
+                # Other numbers
+                phone_display = phone
+            
+            status_icon = "✅" if account.get("status") == "active" else "⚠️"
+            has_2fa = "🔐" if account.get("has_2fa") else ""
+            
+            # Shorten ID for display
+            acc_id = str(account.get("_id", ""))[:8]
+            
+            text += f"{idx}. {status_icon}{has_2fa} <code>{phone_display}</code>\n"
+            text += f"   <i>ID: {acc_id}...</i>\n\n"
+        
+        text += f"<i>Total Accounts: {total_accounts}</i>"
+        
+        # Create keyboard
+        markup = create_accounts_keyboard(accounts, page, total_pages)
         
         self._send_safe_message(
             chat_id,
-            "📱 No Accounts Found\n\nAdd your first account to get started.",
+            text,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE,
             parse_mode="HTML"
         )
-        return
     
-    # Format accounts list - CLEAR PHONE NUMBERS
-    text = f"<b>📱 All Accounts (Page {page}/{total_pages})</b>\n\n"
-    
-    start_num = (page - 1) * 5 + 1
-    for idx, account in enumerate(accounts, start=start_num):
-        phone = account.get("phone", "N/A")
-        
-        # Clear phone number display
-        if phone.startswith('+91') and len(phone) == 13:
-            # Indian number: +91 XXX XXX XXXX format
-            cleaned = phone[1:]  # Remove +
-            phone_display = f"+{cleaned[:2]} {cleaned[2:5]} {cleaned[5:8]} {cleaned[8:]}"
-        else:
-            # Other numbers
-            phone_display = phone
-        
-        status_icon = "✅" if account.get("status") == "active" else "⚠️"
-        has_2fa = "🔐" if account.get("has_2fa") else ""
-        
-        # Shorten ID for display
-        acc_id = str(account.get("_id", ""))[:8]
-        
-        text += f"{idx}. {status_icon}{has_2fa} <code>{phone_display}</code>\n"
-        text += f"   <i>ID: {acc_id}...</i>\n\n"
-    
-    text += f"<i>Total Accounts: {total_accounts}</i>"
-    
-    # Create keyboard
-    markup = create_accounts_keyboard(accounts, page, total_pages)
-    
-    self._send_safe_message(
-        chat_id,
-        text,
-        markup=markup,
-        photo_url=NETFLIX_MAIN_IMAGE,
-        parse_mode="HTML"
-    )
-        
-def _show_account_details(self, user_id: int, chat_id: int, account_id: str):
+    def _show_account_details(self, user_id: int, chat_id: int, account_id: str):
         """Show account details"""
         if user_id != ADMIN_ID:
             return
