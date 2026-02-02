@@ -1,6 +1,6 @@
 """
 FIXED PROFESSIONAL PYROGRAM ACCOUNT MANAGER
-Single Event Loop + Thread-Safe Session Storage
+With session string error handling
 """
 
 import os
@@ -13,6 +13,7 @@ import json
 import hashlib
 import secrets
 import uuid
+import base64
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from threading import RLock
@@ -289,10 +290,10 @@ class ThreadSafeSessionStorage:
             logger.debug(f"Safe disconnect error: {e}")
 
 # ========================
-# ENCRYPTION MANAGER
+# ENCRYPTION MANAGER (WITH SESSION VALIDATION)
 # ========================
 class EncryptionManager:
-    """Handle encryption/decryption of sensitive data"""
+    """Handle encryption/decryption of sensitive data with validation"""
     
     def __init__(self, encryption_key: Optional[str] = None):
         if encryption_key:
@@ -311,11 +312,41 @@ class EncryptionManager:
             return data
     
     def decrypt(self, encrypted_data: str) -> str:
-        """Decrypt sensitive data"""
+        """Decrypt sensitive data with validation"""
         try:
-            return self.cipher.decrypt(encrypted_data.encode()).decode()
-        except Exception:
-            return encrypted_data
+            # First try to decrypt
+            decrypted = self.cipher.decrypt(encrypted_data.encode()).decode()
+            
+            # Validate if it's a proper session string
+            self._validate_session_string(decrypted)
+            
+            return decrypted
+        except Exception as e:
+            logger.warning(f"Decryption failed, trying as plaintext: {e}")
+            # If decryption fails, try to validate as plaintext
+            try:
+                self._validate_session_string(encrypted_data)
+                return encrypted_data
+            except Exception as e2:
+                logger.error(f"Invalid session string: {e2}")
+                # Return empty string if invalid
+                return ""
+    
+    def _validate_session_string(self, session_string: str):
+        """Validate Telegram session string format"""
+        if not session_string or len(session_string) < 100:
+            raise ValueError("Session string too short")
+        
+        # Try to decode as base64
+        try:
+            # Check if it's base64 encoded
+            decoded = base64.b64decode(session_string + '==')
+            if len(decoded) < 100:
+                raise ValueError("Decoded session too short")
+        except:
+            # If not base64, check if it's hex or string format
+            if not re.match(r'^[A-Za-z0-9+/=]+$', session_string):
+                raise ValueError("Invalid session string format")
     
     def get_key(self) -> str:
         """Get encryption key"""
@@ -328,9 +359,9 @@ class DeviceManager:
     """Manage device information for sessions"""
     
     DEVICE_PROFILES = [
-        {"device_model": "Netflix Num Adding", "system_version": "Android 14", "app_version": "Telegram Android 10.8.0", "lang_code": "en"},
-        {"device_model": "Netflix Num Adding 5", "system_version": "Android 14", "app_version": "Telegram Android 10.2.3", "lang_code": "en"},
-        {"device_model": "Netflix Num Adding 3", "system_version": "iOS 17.2", "app_version": "Telegram iOS 10.5.1", "lang_code": "en"},
+        {"device_model": "Samsung Galaxy S23", "system_version": "Android 14", "app_version": "Telegram Android 10.8.0", "lang_code": "en"},
+        {"device_model": "Google Pixel 7", "system_version": "Android 14", "app_version": "Telegram Android 10.2.3", "lang_code": "en"},
+        {"device_model": "iPhone 15 Pro", "system_version": "iOS 17.2", "app_version": "Telegram iOS 10.5.1", "lang_code": "en"},
     ]
     
     @staticmethod
@@ -340,14 +371,14 @@ class DeviceManager:
         return random.choice(DeviceManager.DEVICE_PROFILES)
 
 # ========================
-# ACCOUNT MANAGER (FIXED)
+# ACCOUNT MANAGER (FIXED WITH SESSION VALIDATION)
 # ========================
 class ProfessionalAccountManager:
     """
     Fixed Account Manager with:
-    - Single event loop
-    - Thread-safe session storage
-    - Proper OTP→2FA flow
+    - Session string validation
+    - Better error handling
+    - Proper OTP fetching
     """
     
     def __init__(self, api_id: int, api_hash: str, encryption_key: Optional[str] = None):
@@ -648,92 +679,119 @@ class ProfessionalAccountManager:
             }
     
     async def _get_latest_otp_async(self, session_string: str, phone: str):
-        """Async function to fetch OTP - YOUR LOGIC"""
+        """Async function to fetch OTP with session validation"""
         client = None
         try:
-            # Decrypt if encrypted
+            # Decrypt if encrypted with validation
+            decrypted_session = self.encryption.decrypt(session_string)
+            
+            # Check if session string is valid
+            if not decrypted_session or len(decrypted_session) < 100:
+                logger.error(f"Invalid session string for {phone}")
+                return None
+            
+            # Create client from session string with try-except
             try:
-                decrypted_session = self.encryption.decrypt(session_string)
-            except:
-                decrypted_session = session_string
-            
-            # Create client from session string
-            client = Client(
-                name=f"otp_fetch_{int(datetime.now().timestamp())}",
-                session_string=decrypted_session,
-                api_id=self.api_id,
-                api_hash=self.api_hash,
-                in_memory=True,
-                no_updates=True
-            )
-            
-            await client.connect()
-            
-            latest_otp = None
-            latest_time = None
-            
-            # Search in Telegram chat
-            try:
-                async for message in client.get_chat_history("Telegram", limit=50):
-                    if message.text and "code" in message.text.lower():
-                        # Look for 5-digit OTP
-                        otp_matches = re.findall(r'\b\d{5}\b', message.text)
-                        if otp_matches:
-                            message_time = message.date.timestamp() if message.date else 0
-                            if latest_time is None or message_time > latest_time:
-                                latest_time = message_time
-                                latest_otp = otp_matches[0]
-                                logger.info(f"Found OTP in Telegram chat: {latest_otp}")
-                        
-                        # If no 5-digit, look for 6-digit
-                        if not latest_otp:
-                            otp_matches = re.findall(r'\b\d{6}\b', message.text)
-                            if otp_matches:
-                                message_time = message.date.timestamp() if message.date else 0
-                                if latest_time is None or message_time > latest_time:
-                                    latest_time = message_time
-                                    latest_otp = otp_matches[0]
-                                    logger.info(f"Found 6-digit OTP in Telegram chat: {latest_otp}")
-            except Exception as e:
-                logger.warning(f"Error searching Telegram chat: {e}")
-            
-            # Search in 777000 (Telegram notifications)
-            if not latest_otp:
+                client = Client(
+                    name=f"otp_fetch_{int(datetime.now().timestamp())}",
+                    session_string=decrypted_session,
+                    api_id=self.api_id,
+                    api_hash=self.api_hash,
+                    in_memory=True,
+                    no_updates=True
+                )
+                
+                await client.connect()
+                
+                # Try to get user info to verify session is valid
                 try:
-                    async for message in client.get_chat_history(777000, limit=50):
+                    me = await client.get_me()
+                    if not me:
+                        logger.error(f"Session invalid for {phone}")
+                        await client.disconnect()
+                        return None
+                except Exception as e:
+                    logger.error(f"Session validation failed for {phone}: {e}")
+                    await client.disconnect()
+                    return None
+                
+                latest_otp = None
+                latest_time = None
+                
+                # Search in Telegram chat (Official Telegram messages)
+                try:
+                    async for message in client.get_chat_history("Telegram", limit=30):
                         if message.text and "code" in message.text.lower():
+                            # Look for 5-digit OTP
                             otp_matches = re.findall(r'\b\d{5}\b', message.text)
-                            if otp_matches:
+                            for otp in otp_matches:
                                 message_time = message.date.timestamp() if message.date else 0
                                 if latest_time is None or message_time > latest_time:
                                     latest_time = message_time
-                                    latest_otp = otp_matches[0]
-                                    logger.info(f"Found OTP in 777000: {latest_otp}")
+                                    latest_otp = otp
+                                    logger.info(f"Found OTP in Telegram chat: {latest_otp}")
                             
+                            # If no 5-digit, look for 6-digit
                             if not latest_otp:
                                 otp_matches = re.findall(r'\b\d{6}\b', message.text)
-                                if otp_matches:
+                                for otp in otp_matches:
                                     message_time = message.date.timestamp() if message.date else 0
                                     if latest_time is None or message_time > latest_time:
                                         latest_time = message_time
-                                        latest_otp = otp_matches[0]
-                                        logger.info(f"Found 6-digit OTP in 777000: {latest_otp}")
+                                        latest_otp = otp
+                                        logger.info(f"Found 6-digit OTP in Telegram chat: {latest_otp}")
                 except Exception as e:
-                    logger.warning(f"Error searching 777000: {e}")
-            
-            await self._safe_disconnect(client)
-            
-            if latest_otp:
-                logger.info(f"✅ OTP found for {phone}: {latest_otp}")
-            else:
-                logger.info(f"❌ No OTP found for {phone}")
-            
-            return latest_otp
-            
+                    logger.warning(f"Error searching Telegram chat: {e}")
+                
+                # Search in 777000 (Telegram system notifications)
+                if not latest_otp:
+                    try:
+                        async for message in client.get_chat_history(777000, limit=30):
+                            if message.text and ("code" in message.text.lower() or "verify" in message.text.lower()):
+                                otp_matches = re.findall(r'\b\d{5}\b', message.text)
+                                for otp in otp_matches:
+                                    message_time = message.date.timestamp() if message.date else 0
+                                    if latest_time is None or message_time > latest_time:
+                                        latest_time = message_time
+                                        latest_otp = otp
+                                        logger.info(f"Found OTP in 777000: {latest_otp}")
+                                
+                                if not latest_otp:
+                                    otp_matches = re.findall(r'\b\d{6}\b', message.text)
+                                    for otp in otp_matches:
+                                        message_time = message.date.timestamp() if message.date else 0
+                                        if latest_time is None or message_time > latest_time:
+                                            latest_time = message_time
+                                            latest_otp = otp
+                                            logger.info(f"Found 6-digit OTP in 777000: {latest_otp}")
+                    except Exception as e:
+                        logger.warning(f"Error searching 777000: {e}")
+                
+                await client.disconnect()
+                
+                if latest_otp:
+                    logger.info(f"✅ OTP found for {phone}: {latest_otp}")
+                else:
+                    logger.info(f"❌ No OTP found for {phone}")
+                
+                return latest_otp
+                
+            except Exception as e:
+                logger.error(f"Client creation/connection error for {phone}: {e}")
+                if client:
+                    try:
+                        await client.disconnect()
+                    except:
+                        pass
+                return None
+                
         except Exception as e:
-            logger.error(f"Get OTP error: {e}")
+            logger.error(f"Get OTP error for {phone}: {e}")
             if client:
-                await self._safe_disconnect(client)
+                try:
+                    await client.disconnect()
+                except:
+                    pass
             return None
     
     async def _safe_disconnect(self, client):
