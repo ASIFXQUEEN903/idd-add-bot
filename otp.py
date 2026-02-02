@@ -1,6 +1,6 @@
 """
 OTP UTILITIES FOR NETFLIX BOT
-With account management and pagination
+With proper phone number display
 """
 
 import re
@@ -75,11 +75,32 @@ def extract_otp_from_text(text: str) -> Optional[str]:
     return None
 
 def format_phone_display(phone: str) -> str:
-    """Format phone number for safe display"""
-    if len(phone) <= 8:
+    """Format phone number for clear display - पूरा नंबर दिखाएगा"""
+    if not phone:
+        return "N/A"
+    
+    # Remove any spaces
+    phone = phone.strip()
+    
+    # If it's already short, return as is
+    if len(phone) <= 12:
         return phone
     
-    return f"{phone[:4]}****{phone[-4:]}"
+    # Indian numbers: +91XXXXXXXXXX format
+    if phone.startswith('+91') and len(phone) == 13:
+        # Show full Indian number clearly: +91XXX XXX XXXX
+        cleaned = phone[1:]  # Remove +
+        return f"+{cleaned[:2]} {cleaned[2:5]} {cleaned[5:8]} {cleaned[8:]}"
+    
+    # International numbers
+    if len(phone) >= 7:
+        # Show country code and last 6 digits clearly
+        country_code = phone[:4]  # +XXX
+        last_six = phone[-6:]
+        middle = "***"
+        return f"{country_code}{middle}{last_six}"
+    
+    return phone
 
 def escape_html(text: str) -> str:
     """Escape HTML special characters"""
@@ -136,7 +157,8 @@ def format_accounts_list(accounts: List[Dict], page: int, total_pages: int, tota
     
     start_num = (page - 1) * 5 + 1
     for idx, account in enumerate(accounts, start=start_num):
-        phone_display = format_phone_display(account.get("phone", "N/A"))
+        phone = account.get("phone", "N/A")
+        phone_display = format_phone_display(phone)
         status_icon = "✅" if account.get("status") == "active" else "⚠️"
         has_2fa = "🔐" if account.get("has_2fa") else ""
         
@@ -161,10 +183,15 @@ def create_accounts_keyboard(accounts: List[Dict], page: int, total_pages: int):
     for account in accounts:
         phone = account.get("phone", "N/A")
         phone_display = format_phone_display(phone)
-        short_phone = phone_display[:12] if len(phone_display) > 12 else phone_display
-        account_id = str(account.get("_id", ""))
         
-        btn_text = f"📱 {short_phone}"
+        # Short display for button text (show last 4 digits)
+        if len(phone) >= 4:
+            last_four = phone[-4:]
+            btn_text = f"📱 ***{last_four}"
+        else:
+            btn_text = f"📱 {phone_display[:10]}"
+        
+        account_id = str(account.get("_id", ""))
         buttons.append(InlineKeyboardButton(btn_text, callback_data=f"viewacc_{account_id}"))
     
     # Add buttons in rows of 2
@@ -222,9 +249,11 @@ def create_account_detail_keyboard(account_id: str):
     return markup
 
 def format_account_details(account: Dict) -> str:
-    """Format account details for display"""
+    """Format account details for display - पूरा नंबर दिखाएगा"""
     phone = account.get("phone", "N/A")
-    phone_display = format_phone_display(phone)
+    
+    # Show full phone number in account details
+    phone_display = phone  # पूरा नंबर दिखाएगा
     
     has_2fa = account.get("has_2fa", False)
     status = account.get("status", "active")
@@ -255,7 +284,8 @@ def format_account_details(account: Dict) -> str:
 
 def format_otp_result(phone: str, otp: str, account: Dict = None) -> str:
     """Format OTP result for display"""
-    phone_display = format_phone_display(phone)
+    # Show full phone number in OTP result
+    phone_display = phone
     current_time = datetime.utcnow().strftime('%H:%M:%S')
     
     text = f"""
@@ -276,7 +306,8 @@ def format_otp_result(phone: str, otp: str, account: Dict = None) -> str:
 
 def format_no_otp_found(phone: str) -> str:
     """Format message when no OTP found"""
-    phone_display = format_phone_display(phone)
+    # Show full phone number
+    phone_display = phone
     
     text = f"""
 <b>❌ No OTP Found</b>
