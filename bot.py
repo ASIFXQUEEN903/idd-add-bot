@@ -542,9 +542,9 @@ Recent OTPs:
     # ========================
     def _show_accounts_page(self, user_id: int, chat_id: int, page: int = 1):
     """Show paginated accounts list"""
-    if user_id != ADMIN_ID:
-        self._show_welcome(user_id, chat_id)
-        return
+        if user_id != ADMIN_ID:
+            self._show_welcome(user_id, chat_id)
+            return
     
     # Get paginated accounts
     accounts, total_pages, total_accounts = self.db.get_accounts_page(page, 5)
