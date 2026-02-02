@@ -923,17 +923,7 @@ Phone: {format_phone_display(phone)}
 Enter the 5-digit verification code:
 Check your Telegram messages from "Telegram"
 """
-
-InlineKeyboardMarkup, InlineKeyboardButton
-
-keyboard = InlineKeyboardMarkup()
-keyboard.add(
-    InlineKeyboardButton(
-        text="🔐 See Your Code",
-        url="tg://user?id=777000"
-    )
-)
-            
+                
             self._send_safe_message(
                 chat_id,
                 text,
