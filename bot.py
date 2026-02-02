@@ -1,6 +1,6 @@
 """
 FIXED NETFLIX OTP BOT v4.0
-With improved OTP fetching from ALL messages
+With clear phone number display in accounts list
 """
 
 import os
@@ -542,7 +542,7 @@ Recent OTPs:
     # ========================
     
     def _show_accounts_page(self, user_id: int, chat_id: int, page: int = 1):
-        """Show paginated accounts list"""
+        """Show paginated accounts list with clear phone numbers"""
         if user_id != ADMIN_ID:
             self._show_welcome(user_id, chat_id)
             return
@@ -564,15 +564,39 @@ Recent OTPs:
             )
             return
         
-        # Format accounts list
-        accounts_text = format_accounts_list(accounts, page, total_pages, total_accounts)
+        # Format accounts list - CLEAR PHONE NUMBERS
+        text = f"<b>📱 All Accounts (Page {page}/{total_pages})</b>\n\n"
+        
+        start_num = (page - 1) * 5 + 1
+        for idx, account in enumerate(accounts, start=start_num):
+            phone = account.get("phone", "N/A")
+            
+            # Clear phone number display
+            if phone.startswith('+91') and len(phone) == 13:
+                # Indian number: +91 XXX XXX XXXX format
+                cleaned = phone[1:]  # Remove +
+                phone_display = f"+{cleaned[:2]} {cleaned[2:5]} {cleaned[5:8]} {cleaned[8:]}"
+            else:
+                # Other numbers
+                phone_display = phone
+            
+            status_icon = "✅" if account.get("status") == "active" else "⚠️"
+            has_2fa = "🔐" if account.get("has_2fa") else ""
+            
+            # Shorten ID for display
+            acc_id = str(account.get("_id", ""))[:8]
+            
+            text += f"{idx}. {status_icon}{has_2fa} <code>{phone_display}</code>\n"
+            text += f"   <i>ID: {acc_id}...</i>\n\n"
+        
+        text += f"<i>Total Accounts: {total_accounts}</i>"
         
         # Create keyboard
         markup = create_accounts_keyboard(accounts, page, total_pages)
         
         self._send_safe_message(
             chat_id,
-            accounts_text,
+            text,
             markup=markup,
             photo_url=NETFLIX_MAIN_IMAGE,
             parse_mode="HTML"
